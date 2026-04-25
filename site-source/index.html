@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Claude VR Chat</title>
+	<style>
+		html, body {
+			height: 100%;
+			margin: 0;
+			background: transparent;
+			overflow: hidden;
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+		}
+		#app {
+			width: 100%;
+			height: 100%;
+			background: none;
+		}
+
+		/* DOM Overlay for AR/VR chat interface */
+		#chat-overlay {
+			position: fixed;
+			bottom: 80px;
+			left: 50%;
+			transform: translateX(-50%);
+			width: 90%;
+			max-width: 600px;
+			z-index: 1000;
+			pointer-events: auto;
+		}
+
+		#chat-input-container {
+			display: flex;
+			gap: 8px;
+			background: rgba(30, 30, 40, 0.95);
+			padding: 12px;
+			border-radius: 16px;
+			box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+			backdrop-filter: blur(10px);
+		}
+
+		#chat-input {
+			flex: 1;
+			padding: 12px 16px;
+			font-size: 16px;
+			border: none;
+			border-radius: 12px;
+			background: rgba(255, 255, 255, 0.1);
+			color: #fff;
+			outline: none;
+		}
+
+		#chat-input::placeholder {
+			color: rgba(255, 255, 255, 0.5);
+		}
+
+		#chat-input:focus {
+			background: rgba(255, 255, 255, 0.15);
+		}
+
+		#send-button {
+			padding: 12px 20px;
+			font-size: 16px;
+			border: none;
+			border-radius: 12px;
+			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			color: #fff;
+			cursor: pointer;
+			font-weight: 600;
+			transition: transform 0.1s, opacity 0.2s;
+		}
+
+		#send-button:hover {
+			transform: scale(1.05);
+		}
+
+		#send-button:active {
+			transform: scale(0.95);
+		}
+
+		#send-button:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		/* Export modal */
+		#export-modal {
+			display: none;
+			position: fixed;
+			top: 0; left: 0; right: 0; bottom: 0;
+			z-index: 2000;
+			align-items: center;
+			justify-content: center;
+			background: rgba(0, 0, 0, 0.6);
+			pointer-events: auto;
+		}
+
+		#export-modal-inner {
+			background: rgba(25, 25, 40, 0.97);
+			border-radius: 20px;
+			padding: 24px;
+			width: 320px;
+			max-width: 90%;
+			box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+			backdrop-filter: blur(12px);
+			color: #fff;
+		}
+
+		#export-modal-inner h3 {
+			margin: 0 0 16px 0;
+			font-size: 20px;
+			text-align: center;
+		}
+
+		#export-modal-inner label {
+			display: block;
+			font-size: 14px;
+			color: rgba(255, 255, 255, 0.7);
+			margin-bottom: 4px;
+		}
+
+		#export-modal-inner input[type="text"] {
+			width: 100%;
+			padding: 10px 12px;
+			font-size: 16px;
+			border: none;
+			border-radius: 10px;
+			background: rgba(255, 255, 255, 0.1);
+			color: #fff;
+			outline: none;
+			margin-bottom: 12px;
+			box-sizing: border-box;
+		}
+
+		#export-modal-inner input[type="text"]:focus {
+			background: rgba(255, 255, 255, 0.15);
+		}
+
+		#export-preview-area {
+			display: flex;
+			align-items: center;
+			gap: 12px;
+			margin-bottom: 16px;
+		}
+
+		#export-preview {
+			width: 80px;
+			height: 80px;
+			border-radius: 10px;
+			background: rgba(255, 255, 255, 0.05);
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			overflow: hidden;
+			flex-shrink: 0;
+		}
+
+		#export-screenshot-btn {
+			padding: 10px 16px;
+			font-size: 14px;
+			border: none;
+			border-radius: 10px;
+			background: rgba(139, 92, 246, 0.4);
+			color: #fff;
+			cursor: pointer;
+			transition: background 0.2s;
+		}
+
+		#export-screenshot-btn:hover {
+			background: rgba(139, 92, 246, 0.6);
+		}
+
+		.export-modal-buttons {
+			display: flex;
+			gap: 10px;
+			margin-top: 8px;
+		}
+
+		.export-modal-buttons button {
+			flex: 1;
+			padding: 12px;
+			font-size: 16px;
+			font-weight: 600;
+			border: none;
+			border-radius: 12px;
+			cursor: pointer;
+			transition: transform 0.1s, opacity 0.2s;
+		}
+
+		#export-cancel-btn {
+			background: rgba(255, 255, 255, 0.1);
+			color: #fff;
+		}
+
+		#export-confirm-btn {
+			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			color: #fff;
+		}
+
+		.export-modal-buttons button:hover {
+			transform: scale(1.03);
+		}
+
+		.export-modal-buttons button:active {
+			transform: scale(0.97);
+		}
+
+		/* Hidden file input */
+		#scene-file-input {
+			display: none;
+		}
+
+		/* Status indicator */
+		#status {
+			position: fixed;
+			top: 20px;
+			right: 20px;
+			padding: 8px 16px;
+			background: rgba(30, 30, 40, 0.9);
+			color: #fff;
+			border-radius: 8px;
+			font-size: 14px;
+			z-index: 1000;
+		}
+
+		#status.connected {
+			background: rgba(16, 185, 129, 0.9);
+		}
+
+		#status.error {
+			background: rgba(239, 68, 68, 0.9);
+		}
+	</style>
+</head>
+<body>
+	<div id="app"></div>
+
+	<!-- DOM Overlay elements for AR -->
+	<div id="overlay-root">
+		<div id="status">Ready</div>
+
+		<!-- Scene file input (hidden) -->
+		<input type="file" id="scene-file-input" multiple accept=".vrscene,.json,*" />
+
+		<!-- Export modal -->
+		<div id="export-modal">
+			<div id="export-modal-inner">
+				<h3>Export Scene</h3>
+				<label for="export-name">Scene Name</label>
+				<input type="text" id="export-name" value="My Scene" autocomplete="off" />
+				<label for="export-ext">File Extension</label>
+				<input type="text" id="export-ext" value="vrscene" autocomplete="off" />
+				<label>Screenshot</label>
+				<div id="export-preview-area">
+					<div id="export-preview">
+						<span style="color:rgba(255,255,255,0.4);font-size:12px;text-align:center">No screenshot</span>
+					</div>
+					<button id="export-screenshot-btn">📸 Capture</button>
+				</div>
+				<div class="export-modal-buttons">
+					<button id="export-cancel-btn">Cancel</button>
+					<button id="export-confirm-btn">Export</button>
+				</div>
+			</div>
+		</div>
+
+		<div id="chat-overlay">
+			<div id="chat-input-container">
+				<input type="text" id="chat-input" placeholder="Ask Claude something..." autocomplete="off" />
+				<button id="send-button">Send</button>
+			</div>
+		</div>
+	</div>
+
+	<script type="importmap">
+	{
+		"imports": {
+			"three": "./node_modules/three/build/three.module.js",
+			"three/examples/jsm/": "./node_modules/three/examples/jsm/"
+		}
+	}
+	</script>
+	<script type="module" src="./main.js"></script>
+</body>
+</html>

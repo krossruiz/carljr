@@ -1,0 +1,7 @@
+Info on how this WebXR passthrough boilerplate was set up:
+https://threejs.org/manual/#en/how-to-create-vr-content
+https://discourse.threejs.org/t/how-to-enable-webxr-passthrough-for-quest2/43897
+    A quote from the above site I used for passthrough:
+    "webgl renderer must be transparent (alpha:true in threejs) and background color (0x00000,0)
+    canvas css must be transparent (background:none)
+    must enter immersive-ar (not immersive-vr session)"

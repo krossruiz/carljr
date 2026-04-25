@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -c main.js)",
+      "Bash(nslookup:*)",
+      "Bash(node:*)",
+      "Bash(find 'C:/Users/KROSS/Desktop/programming projects/VRClaudeInterface' -type d ! -path */node_modules/* ! -path */.git/*)"
+    ]
+  }
+}
