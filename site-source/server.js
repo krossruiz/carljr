@@ -42,6 +42,48 @@ The scene is a Three.js WebXR application. You have access to these globals when
 - \`camera\` — the THREE.PerspectiveCamera
 - \`renderer\` — the THREE.WebGLRenderer (XR-enabled)
 - \`document\` — the page DOM (you can inject HTML elements into #overlay-root for DOM overlay UI)
+- \`hud\` — a group attached to the camera (head-locked). Add objects here ONLY when the user explicitly asks for a HUD / an element that follows them. Never use it by default.
+
+## Coordinate system (IMPORTANT)
+
+This session requests a \`local-floor\` reference space. In WebXR, the floor position is accessed by requesting a \`local-floor\` or \`bounded-floor\` reference space. These spaces initialize the origin at floor level, where the y-axis is 0 at the ground, x is horizontal, and z is depth. \`local-floor\` provides a stable ground reference, while \`bounded-floor\` includes physical boundaries.
+
+Concretely for this app:
+- **y = 0 is the real-world floor** in the user's AR space.
+- **y ≈ 1.6** is roughly the user's eye level (standing).
+- **z is negative going forward** (away from the user); the user faces \`-z\` by default.
+
+Place objects at heights that match where they belong in real life:
+- Floors, rugs, ground planes → y = 0 (NEVER at eye level — this is a common mistake).
+- Tabletop objects → y ≈ 0.7–0.9 (table height).
+- Wall art / framed objects → y ≈ 1.4–1.7.
+- Floating UI panels facing the user → y ≈ 1.4 and z ≈ -1.5.
+- Ceiling objects → y ≈ 2.4+.
+
+Do NOT default to y = 1.5 for everything. The chat/input/scene panels already sit there; piling new objects at the same height clutters the user's face. When in doubt about a specific object, think about where it would be in a real room and use that y.
+
+When generating something *the user stands on or walks around* (a floor, a platform, a path), build it at y = 0 and give it explicit width/depth — for example a floor:
+
+\`\`\`vr-exec
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(6, 6),
+  new THREE.MeshStandardMaterial({ color: 0x6b7280, side: THREE.DoubleSide })
+);
+floor.rotation.x = -Math.PI / 2;  // lay flat on the ground plane
+floor.position.set(0, 0, 0);       // y = 0 = AR floor
+scene.add(floor);
+\`\`\`
+
+## Anchoring (IMPORTANT — default behavior)
+
+Objects you add with \`scene.add(...)\` are anchored to the physical room (the larger environmental scene). They stay fixed in world space as the user walks around, turns their head, or looks away — they are NOT attached to the chat window or the user. **This is the default and what you must do unless the user explicitly asks otherwise.** Set a world position once with \`obj.position.set(x, y, z)\` and leave it there.
+
+Do NOT make new objects follow, attach to, or move with the user or the chat window by default:
+- Never parent an object to \`camera\` (e.g. \`camera.add(obj)\`).
+- Never register a \`window._vrAnimations\` callback that copies \`camera.position\`/rotation onto an object, or calls \`obj.lookAt(camera.position)\` every frame, just to keep it in front of the user.
+- Never recompute an object's position from \`camera\` every frame.
+
+Only when the user *explicitly* asks for a head-locked HUD, a "follow me" panel, or an element that always faces them should you make it follow — and in that case add it to the \`hud\` group (\`hud.add(obj)\`), which is attached to the camera and will track the user. Its \`position\` is relative to the camera (e.g. \`obj.position.set(0, 0, -1)\` places it 1m in front). Do NOT parent to \`camera\` directly — objects added straight to \`camera\` are automatically re-anchored to the world. Everything not in \`hud\` stays world-anchored via \`scene.add(...)\`.
 
 ## How to modify the scene
 
@@ -75,7 +117,9 @@ document.getElementById('overlay-root').appendChild(panel);
 5. When removing objects, use \`scene.remove(obj)\` and \`obj.geometry.dispose(); obj.material.dispose();\` to free memory.
 6. To reference objects you've previously added, attach them to \`window\` (e.g., \`window.myCube = cube;\`).
 7. For embedded <script> tags in injected HTML, they will be executed automatically by the browser.
-8. The user is in VR/AR on a Quest 3 headset — keep UI elements readable and appropriately sized.`;
+8. The user is in VR/AR on a Quest 3 headset — keep UI elements readable and appropriately sized.
+9. vr-exec blocks run inside an async function, so you can use \`await\` at the top level.
+10. By default, anchor new objects to the world with \`scene.add(...)\` and a fixed \`position\`. Do NOT parent them to \`camera\` or add per-frame code that makes them follow the user, unless the user explicitly requests a head-locked or always-facing element (see "Anchoring" above).`;
 
 // System prompt for error-correction requests
 const FIX_CODE_PROMPT = `You are an automatic error-correction system for a WebXR VR environment built with Three.js.
@@ -84,7 +128,7 @@ A vr-exec code block failed to execute. Your job is to fix the code and return O
 
 ## Environment
 
-The code runs inside \`new Function('THREE', 'scene', 'camera', 'renderer', 'document', code)\`, so these are the ONLY variables available:
+The code runs inside an \`AsyncFunction('THREE', 'scene', 'camera', 'renderer', 'document', code)\`, so these are the ONLY variables available:
 - \`THREE\` — the Three.js library (use THREE.* for all Three.js classes/utilities)
 - \`scene\` — THREE.Scene instance
 - \`camera\` — THREE.PerspectiveCamera
@@ -92,6 +136,8 @@ The code runs inside \`new Function('THREE', 'scene', 'camera', 'renderer', 'doc
 - \`document\` — the page DOM
 - \`window\` — the global window object (use window.* to access/store persistent references)
 - \`window._vrAnimations\` — array of per-frame animation callbacks
+
+Top-level \`await\` IS allowed because the function is async.
 
 ## Common mistakes to fix
 
@@ -114,9 +160,11 @@ The code runs inside \`new Function('THREE', 'scene', 'camera', 'renderer', 'doc
 function callClaudeAPI(systemPrompt, messages, maxTokens = 16384) {
 	return new Promise((resolve, reject) => {
 		const postBody = JSON.stringify({
-			model: 'claude-sonnet-4-20250514',
+			model: 'claude-sonnet-5',
 			max_tokens: maxTokens,
-			temperature: 1,
+			// Thinking is on by default on Sonnet 5; disable it so content[0] stays
+			// a text block (the client reads data.content[0].text) and to keep VR latency low.
+			thinking: { type: 'disabled' },
 			system: systemPrompt,
 			messages: messages
 		});

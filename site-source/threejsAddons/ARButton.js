@@ -26,9 +26,11 @@ class ARButton {
 
 				session.addEventListener( 'end', onSessionEnded );
 
-				// Ensure AR reference space is set up on the renderer
+				// Use 'local-floor' so the world origin sits at the real floor
+				// (y=0 = ground). With plain 'local', the origin is wherever
+				// the headset is at session start, which puts y=0 at eye level.
 				if ( renderer.xr && renderer.xr.setReferenceSpaceType ) {
-					renderer.xr.setReferenceSpaceType( 'local' );
+					renderer.xr.setReferenceSpaceType( 'local-floor' );
 				}
 
 				await renderer.xr.setSession( session );
@@ -59,11 +61,19 @@ class ARButton {
 			button.textContent = 'ENTER AR';
 
 			// Request useful optional features when available.
+			// 'local-floor' must be in requiredFeatures or optionalFeatures
+			// for setReferenceSpaceType('local-floor') to succeed; otherwise
+			// the UA falls back to 'local' silently.
 			const sessionOptions = {
 				...sessionInit,
+				requiredFeatures: [
+					'local-floor',
+					...( sessionInit.requiredFeatures || [] )
+				],
 				optionalFeatures: [
 					'layers',
 					'dom-overlay',
+					'bounded-floor',
 					...( sessionInit.optionalFeatures || [] )
 				]
 			};

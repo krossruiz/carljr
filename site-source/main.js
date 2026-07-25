@@ -10,9 +10,14 @@ const CHAT_PANEL_DISTANCE = 1.5;
 const MESSAGE_FONT_SIZE = 24;
 const SCROLL_SPEED = 3; // lines per second at full thumbstick deflection
 const THUMBSTICK_DEADZONE = 0.15;
+const MOVE_SPEED = 1.5;  // metres/second at full left-thumbstick deflection
+const TURN_SPEED = 1.8;  // radians/second at full right-thumbstick deflection
 const INPUT_PANEL_WIDTH = 1.2;
 const INPUT_PANEL_HEIGHT = 0.15;
 const INPUT_PANEL_GAP = 0.05;
+const KEYBOARD_PANEL_WIDTH = 1.2;
+const KEYBOARD_PANEL_HEIGHT = 0.45;
+const KEYBOARD_PANEL_GAP = 0.05;
 const SIDE_PANEL_WIDTH = 0.3;
 const SIDE_PANEL_HEIGHT = 0.8;
 const SIDE_PANEL_GAP = 0.06;
@@ -61,6 +66,45 @@ let inputTexture = null;
 let inputCanvas = null;
 let inputContext = null;
 let inputText = '';
+let keyboardPanel = null;
+let keyboardTexture = null;
+let keyboardCanvas = null;
+let keyboardContext = null;
+let keyboardShift = false;    // uppercase next character key
+let keyboardSymbols = false;  // symbol layer toggled on
+let keyboardKeyRects = [];    // hit rectangles: { x, y, w, h, value, action }
+let keyboardCollapsed = false; // keyboard hidden to free up the view
+let keyboardHoverIndex = -1;  // index into keyboardKeyRects the pointer is over
+let rayVisible = true;        // controller ray lines shown (cursor always shows)
+let hudStatusPanel = null;    // head-locked status badge (mirrors DOM #status)
+let hudStatusCanvas = null;
+let hudStatusContext = null;
+let hudStatusTexture = null;
+let uiCollapsed = false;      // all main panels hidden for an unobstructed scene
+let uiTogglePanel = null;     // head-locked Hide/Show-UI button (never collapses)
+let uiToggleCanvas = null;
+let uiToggleContext = null;
+let uiToggleTexture = null;
+let player = null;            // rig holding the camera + controllers (locomotion)
+let locomotionMode = 'off';   // 'off' (thumbsticks scroll) | 'planar' | 'free'
+let _locoPrevTime = 0;        // previous frame timestamp for dt
+
+// Speech-to-text (in-browser Whisper via transformers.js — cross-platform)
+let speechSupported = false;   // getUserMedia + MediaRecorder available
+let micMode = 'off';           // 'off' | 'always' | 'ptt'
+let pttHand = null;            // handedness that started push-to-talk
+let sttPipelinePromise = null; // lazy-loaded Whisper ASR pipeline (Promise)
+let sttModelReady = false;     // model finished loading at least once
+let micStream = null;          // active getUserMedia MediaStream
+let mediaRecorder = null;      // MediaRecorder for the current utterance
+let recordedChunks = [];       // audio blobs for the current utterance
+let sttBusy = false;           // a transcription is in flight
+let vadContext = null;         // AudioContext used for voice-activity detection
+let vadAnalyser = null;        // AnalyserNode sampled each frame from the XR loop
+let vadData = null;            // reusable Float32Array for analyser samples
+let vadSpeaking = false;       // VAD currently hears speech
+let vadSilenceMs = 0;          // ms of trailing silence after speech
+let vadLastTime = 0;           // timestamp of last VAD tick
 let chatScrollOffset = 0; // in lines, 0 = scrolled to bottom (newest)
 let sidePanel = null;
 let sideTexture = null;
@@ -90,6 +134,23 @@ window.scene = scene;
 window.camera = camera;
 window.renderer = renderer;
 window._vrAnimations = [];
+
+// Head-locked anchor for HUD elements the user *explicitly* asks to follow them.
+// It is a child of the camera, so its origin matches the camera's translation.
+const hud = new THREE.Group();
+hud.name = 'hud';
+camera.add(hud);
+
+// Player rig ("dolly"): the camera (and, later, the controllers) ride inside it.
+// Moving/rotating this group is the WebXR-correct way to move the user — three.js
+// composes the rig's transform with the live headset pose. The camera must be in
+// the scene graph for the HUD's children to render, which it now is via `player`.
+player = new THREE.Group();
+player.name = 'player';
+player.add(camera);
+scene.add(player);
+
+window.hud = hud;
 
 // ============================================================================
 // AR Button Setup with DOM Overlay
@@ -354,6 +415,21 @@ function createInputPanel() {
 	renderInputToCanvas();
 }
 
+// Shared geometry for the input panel's buttons so rendering and hit-testing
+// stay in sync. Layout, left to right: [input area][MIC][KEYS][Send].
+function inputPanelLayout() {
+	const W = inputCanvas ? inputCanvas.width : 1024;
+	const H = inputCanvas ? inputCanvas.height : 128;
+	const pad = 12, gap = 8;
+	const sendW = 150, kbdW = 100, micW = 100;
+	const sendX = W - pad - sendW;
+	const kbdX = sendX - gap - kbdW;
+	const micX = kbdX - gap - micW;
+	const inputAreaX = pad;
+	const inputAreaW = micX - gap - inputAreaX;
+	return { W, H, pad, gap, sendW, kbdW, micW, sendX, kbdX, micX, inputAreaX, inputAreaW };
+}
+
 function renderInputToCanvas() {
 	if (!inputContext) return;
 
@@ -368,12 +444,11 @@ function renderInputToCanvas() {
 	roundRect(ctx, 0, 0, width, height, 20);
 	ctx.fill();
 
-	// Input area background
-	const sendBtnWidth = 150;
-	const inputAreaWidth = width - sendBtnWidth - 36;
+	const L = inputPanelLayout();
 
+	// Input area background
 	ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-	roundRect(ctx, 12, 12, inputAreaWidth, height - 24, 12);
+	roundRect(ctx, L.inputAreaX, 12, L.inputAreaW, height - 24, 12);
 	ctx.fill();
 
 	// Input text or placeholder
@@ -382,31 +457,545 @@ function renderInputToCanvas() {
 	if (inputText) {
 		ctx.fillStyle = '#ffffff';
 		let displayText = inputText;
-		while (ctx.measureText(displayText + '|').width > inputAreaWidth - 32 && displayText.length > 0) {
+		while (ctx.measureText(displayText + '|').width > L.inputAreaW - 32 && displayText.length > 0) {
 			displayText = displayText.slice(1);
 		}
-		ctx.fillText(displayText + '|', 24, height / 2 + 8);
+		ctx.fillText(displayText + '|', L.inputAreaX + 12, height / 2 + 8);
 	} else {
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-		ctx.fillText('Ask Claude something...', 24, height / 2 + 8);
+		ctx.fillText('Ask Claude something...', L.inputAreaX + 12, height / 2 + 8);
 	}
 
+	ctx.textAlign = 'center';
+	ctx.font = 'bold 22px -apple-system, BlinkMacSystemFont, sans-serif';
+
+	// Mic button — red while listening (always-on or push-to-talk)
+	const micListening = micMode !== 'off';
+	ctx.fillStyle = micListening ? '#ef4444' : 'rgba(90, 92, 120, 0.9)';
+	roundRect(ctx, L.micX, 12, L.micW, height - 24, 12);
+	ctx.fill();
+	ctx.fillStyle = '#ffffff';
+	ctx.fillText('MIC', L.micX + L.micW / 2, height / 2 + 8);
+
+	// Keyboard show/hide button — indigo when the keyboard is showing
+	ctx.fillStyle = keyboardCollapsed ? 'rgba(90, 92, 120, 0.9)' : '#6366f1';
+	roundRect(ctx, L.kbdX, 12, L.kbdW, height - 24, 12);
+	ctx.fill();
+	ctx.fillStyle = '#ffffff';
+	ctx.fillText('KEYS', L.kbdX + L.kbdW / 2, height / 2 + 8);
+
 	// Send button
-	const btnX = width - sendBtnWidth - 12;
-	const gradient = ctx.createLinearGradient(btnX, 0, btnX + sendBtnWidth, height);
+	const gradient = ctx.createLinearGradient(L.sendX, 0, L.sendX + L.sendW, height);
 	gradient.addColorStop(0, '#6366f1');
 	gradient.addColorStop(1, '#8b5cf6');
 	ctx.fillStyle = gradient;
-	roundRect(ctx, btnX, 12, sendBtnWidth, height - 24, 12);
+	roundRect(ctx, L.sendX, 12, L.sendW, height - 24, 12);
 	ctx.fill();
-
 	ctx.fillStyle = '#ffffff';
 	ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.textAlign = 'center';
-	ctx.fillText('Send', btnX + sendBtnWidth / 2, height / 2 + 8);
+	ctx.fillText('Send', L.sendX + L.sendW / 2, height / 2 + 8);
 	ctx.textAlign = 'left';
 
 	inputTexture.needsUpdate = true;
+}
+
+// ============================================================================
+// 3D Virtual Keyboard (in-scene text entry for XR)
+// ============================================================================
+// Text is entered entirely in-scene: the controller raycast presses keys and we
+// mutate `inputText` directly. We never focus the DOM input in XR, so the crashy
+// Quest system keyboard is never summoned.
+//
+// Each row is laid out left-to-right; a key's `w` is a relative width weight. A
+// plain string is a character key; an object declares a control key or a char key
+// with a custom label.
+const KB_ROWS_LETTERS = [
+	['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+	['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+	['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
+	[{ label: '⇧', action: 'shift', w: 1.5 }, 'z', 'x', 'c', 'v', 'b', 'n', 'm', { label: '⌫', action: 'backspace', w: 1.5 }],
+	[{ label: '?123', action: 'symbols', w: 2 }, { label: 'space', action: 'space', w: 5 }, '.', { label: 'Send', action: 'enter', w: 2 }]
+];
+const KB_ROWS_SYMBOLS = [
+	['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+	['!', '@', '#', '$', '%', '&', '*', '(', ')', '/'],
+	['-', '_', '=', '+', ':', ';', ',', '?', '\''],
+	[{ label: '"', action: 'char' }, '[', ']', '{', '}', '<', '>', '~', { label: '⌫', action: 'backspace', w: 1.5 }],
+	[{ label: 'abc', action: 'symbols', w: 2 }, { label: 'space', action: 'space', w: 5 }, '.', { label: 'Send', action: 'enter', w: 2 }]
+];
+
+function normalizeKey(key) {
+	if (typeof key === 'string') {
+		return { label: key, value: key, action: 'char', w: 1 };
+	}
+	return {
+		label: key.label,
+		value: key.value !== undefined ? key.value : key.label,
+		action: key.action || 'char',
+		w: key.w || 1
+	};
+}
+
+function createKeyboardPanel() {
+	keyboardCanvas = document.createElement('canvas');
+	keyboardCanvas.width = 1024;
+	keyboardCanvas.height = 384;
+	keyboardContext = keyboardCanvas.getContext('2d');
+
+	keyboardTexture = new THREE.CanvasTexture(keyboardCanvas);
+	keyboardTexture.minFilter = THREE.LinearFilter;
+	keyboardTexture.magFilter = THREE.LinearFilter;
+
+	const geometry = new THREE.PlaneGeometry(KEYBOARD_PANEL_WIDTH, KEYBOARD_PANEL_HEIGHT);
+	const material = new THREE.MeshBasicMaterial({
+		map: keyboardTexture,
+		transparent: true,
+		side: THREE.DoubleSide
+	});
+
+	keyboardPanel = new THREE.Mesh(geometry, material);
+	const inputY = 1.4 - CHAT_PANEL_HEIGHT / 2 - INPUT_PANEL_GAP - INPUT_PANEL_HEIGHT / 2;
+	const kbY = inputY - INPUT_PANEL_HEIGHT / 2 - KEYBOARD_PANEL_GAP - KEYBOARD_PANEL_HEIGHT / 2;
+	keyboardPanel.position.set(0, kbY, -CHAT_PANEL_DISTANCE);
+	scene.add(keyboardPanel);
+
+	renderKeyboardToCanvas();
+}
+
+function renderKeyboardToCanvas() {
+	if (!keyboardContext) return;
+
+	const ctx = keyboardContext;
+	const W = keyboardCanvas.width;
+	const H = keyboardCanvas.height;
+	const pad = 12;
+	const gap = 8;
+
+	ctx.clearRect(0, 0, W, H);
+	ctx.fillStyle = 'rgba(30, 30, 40, 0.95)';
+	roundRect(ctx, 0, 0, W, H, 20);
+	ctx.fill();
+
+	const rows = keyboardSymbols ? KB_ROWS_SYMBOLS : KB_ROWS_LETTERS;
+	keyboardKeyRects = [];
+
+	const rowH = (H - pad * 2 - gap * (rows.length - 1)) / rows.length;
+	ctx.textAlign = 'center';
+	ctx.textBaseline = 'middle';
+
+	for (let r = 0; r < rows.length; r++) {
+		const keys = rows[r].map(normalizeKey);
+		const totalWeight = keys.reduce((s, k) => s + k.w, 0);
+		const usableW = W - pad * 2 - gap * (keys.length - 1);
+		const unit = usableW / totalWeight;
+		const y = pad + r * (rowH + gap);
+		let x = pad;
+
+		for (const k of keys) {
+			const w = k.w * unit;
+			const idx = keyboardKeyRects.length; // this key's index once pushed below
+
+			// Key background: control keys get a solid tint, char keys a faint fill.
+			if (k.action === 'enter') {
+				const g = ctx.createLinearGradient(x, y, x + w, y + rowH);
+				g.addColorStop(0, '#6366f1');
+				g.addColorStop(1, '#8b5cf6');
+				ctx.fillStyle = g;
+			} else if (k.action === 'shift' && keyboardShift) {
+				ctx.fillStyle = '#6366f1';
+			} else if (k.action !== 'char' && k.action !== 'space') {
+				ctx.fillStyle = 'rgba(90, 92, 120, 0.9)';
+			} else {
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+			}
+			roundRect(ctx, x, y, w, rowH, 10);
+			ctx.fill();
+
+			// Hover highlight: brighten the key the pointer is currently over.
+			if (idx === keyboardHoverIndex) {
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+				roundRect(ctx, x, y, w, rowH, 10);
+				ctx.fill();
+				ctx.strokeStyle = '#ffffff';
+				ctx.lineWidth = 3;
+				roundRect(ctx, x + 1.5, y + 1.5, w - 3, rowH - 3, 9);
+				ctx.stroke();
+			}
+
+			// Label
+			ctx.fillStyle = '#ffffff';
+			ctx.font = (k.action === 'enter' ? 'bold ' : '') + '30px -apple-system, BlinkMacSystemFont, sans-serif';
+			let label = k.label;
+			if (k.action === 'char' && keyboardShift && /^[a-z]$/.test(label)) {
+				label = label.toUpperCase();
+			}
+			ctx.fillText(label, x + w / 2, y + rowH / 2 + 1);
+
+			keyboardKeyRects.push({ x, y, w, h: rowH, value: k.value, action: k.action });
+			x += w + gap;
+		}
+	}
+
+	ctx.textAlign = 'left';
+	ctx.textBaseline = 'alphabetic';
+	keyboardTexture.needsUpdate = true;
+}
+
+function keyIndexAtUV(uv) {
+	const cx = uv.x * keyboardCanvas.width;
+	const cy = (1 - uv.y) * keyboardCanvas.height; // UV y is flipped vs canvas y
+	for (let i = 0; i < keyboardKeyRects.length; i++) {
+		const r = keyboardKeyRects[i];
+		if (cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h) return i;
+	}
+	return -1;
+}
+
+// Update which key is highlighted; only re-render the canvas when it changes.
+function setKeyboardHover(index) {
+	if (index === keyboardHoverIndex) return;
+	keyboardHoverIndex = index;
+	renderKeyboardToCanvas();
+}
+
+function handleKeyboardHit(uv) {
+	const idx = keyIndexAtUV(uv);
+	if (idx >= 0) dispatchKey(keyboardKeyRects[idx]);
+}
+
+function dispatchKey(key) {
+	switch (key.action) {
+		case 'char': {
+			let c = key.value;
+			if (keyboardShift && /^[a-z]$/.test(c)) c = c.toUpperCase();
+			setInputText(inputText + c);
+			// Shift auto-resets after one character, like a phone keyboard.
+			if (keyboardShift) {
+				keyboardShift = false;
+				renderKeyboardToCanvas();
+			}
+			break;
+		}
+		case 'space':
+			setInputText(inputText + ' ');
+			break;
+		case 'backspace':
+			setInputText(inputText.slice(0, -1));
+			break;
+		case 'shift':
+			keyboardShift = !keyboardShift;
+			renderKeyboardToCanvas();
+			break;
+		case 'symbols':
+			keyboardSymbols = !keyboardSymbols;
+			keyboardShift = false;
+			renderKeyboardToCanvas();
+			break;
+		case 'enter':
+			handleXRSend();
+			break;
+	}
+}
+
+// Set the current input text and keep every representation of it in sync:
+// the state var, the hidden DOM input (used by the desktop path), and the 3D
+// input panel's rendered text.
+function setInputText(text) {
+	inputText = text;
+	chatInput.value = text;
+	renderInputToCanvas();
+}
+
+// Show/hide the in-scene keyboard. When collapsed it is removed from hit-testing
+// (see the render loop) so the pointer passes through to whatever is behind it.
+function toggleKeyboard() {
+	keyboardCollapsed = !keyboardCollapsed;
+	if (keyboardPanel) keyboardPanel.visible = !keyboardCollapsed;
+	if (keyboardCollapsed) setKeyboardHover(-1);
+	renderInputToCanvas(); // refresh the KEYS button state
+}
+
+// ============================================================================
+// Pointer Ray Visibility Toggle
+// ============================================================================
+// Hide the ray *lines* for an unobstructed view while keeping the intersection
+// cursor (reticle) so the user can still aim. Bound to the B/Y controller button.
+function toggleRayVisibility() {
+	rayVisible = !rayVisible;
+	for (const ray of controllerRays) {
+		if (ray) ray.visible = rayVisible;
+	}
+	updateStatus(rayVisible ? 'Pointer lines on' : 'Pointer lines off (cursor only)', '');
+}
+
+// ============================================================================
+// Speech-to-Text (cross-platform: MediaRecorder + in-browser Whisper)
+// ============================================================================
+// The Web Speech API (SpeechRecognition) only exists in Chrome/Edge desktop, so
+// it was dead on the Quest Browser, Firefox, and Safari. Instead we capture audio
+// with getUserMedia + MediaRecorder (supported everywhere) and transcribe it
+// locally in the browser with Whisper via transformers.js — no API key, no server
+// round-trip, works on any platform with a mic and a secure context.
+//   • Always-on: toggle the MIC button; a voice-activity detector segments speech
+//     and each finished utterance is transcribed and auto-sent.
+//   • Push-to-talk: hold the A/X controller button; the utterance is transcribed
+//     and sent on release.
+// Requires a secure context (HTTPS or localhost) for mic access — the same
+// requirement WebXR itself has — plus internet on first run to fetch the model.
+const STT_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/+esm';
+const STT_MODEL = 'Xenova/whisper-tiny.en';
+const VAD_RMS_THRESHOLD = 0.015; // speech vs. silence energy threshold
+const VAD_SILENCE_MS = 800;      // trailing silence that ends an utterance
+
+function initSpeech() {
+	speechSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+}
+
+// Lazily download + build the Whisper pipeline (cached in the browser after the
+// first run). Returned promise is memoized; on failure it resets so we can retry.
+function loadSttPipeline() {
+	if (!sttPipelinePromise) {
+		updateStatus('Loading speech model… (first time only)', '');
+		sttPipelinePromise = import(/* @vite-ignore */ STT_CDN)
+			.then(async ({ pipeline, env }) => {
+				env.allowLocalModels = false; // fetch from the HF hub, not a local path
+				const asr = await pipeline('automatic-speech-recognition', STT_MODEL);
+				sttModelReady = true;
+				return asr;
+			})
+			.catch((e) => {
+				sttPipelinePromise = null; // allow a later retry
+				throw e;
+			});
+	}
+	return sttPipelinePromise;
+}
+
+async function ensureMicStream() {
+	if (micStream) return micStream;
+	micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+	return micStream;
+}
+
+// Decode an encoded audio blob (webm/ogg/mp4) to a mono 16 kHz Float32Array,
+// which is what Whisper expects.
+async function decodeTo16kMono(blob) {
+	const AC = window.AudioContext || window.webkitAudioContext;
+	const buf = await blob.arrayBuffer();
+	const tmp = new AC();
+	let decoded;
+	try {
+		decoded = await tmp.decodeAudioData(buf);
+	} finally {
+		tmp.close();
+	}
+	const rate = 16000;
+	const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+	const src = offline.createBufferSource();
+	src.buffer = decoded;
+	src.connect(offline.destination);
+	src.start(0);
+	const rendered = await offline.startRendering();
+	return rendered.getChannelData(0);
+}
+
+async function transcribeBlob(blob) {
+	if (!blob || blob.size < 1200) return ''; // effectively empty
+	const asr = await loadSttPipeline();
+	const audio = await decodeTo16kMono(blob);
+	if (!audio || audio.length < 1600) return ''; // < ~0.1s
+	const out = await asr(audio);
+	return (out && out.text ? out.text : '').trim();
+}
+
+// One MediaRecorder utterance at a time.
+function startUtterance() {
+	recordedChunks = [];
+	mediaRecorder = new MediaRecorder(micStream);
+	mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+	mediaRecorder.start();
+}
+
+function stopUtterance() {
+	return new Promise((resolve) => {
+		if (!mediaRecorder || mediaRecorder.state === 'inactive') { resolve(null); return; }
+		mediaRecorder.onstop = () => {
+			const type = recordedChunks[0] ? recordedChunks[0].type : 'audio/webm';
+			resolve(recordedChunks.length ? new Blob(recordedChunks, { type }) : null);
+		};
+		try { mediaRecorder.stop(); } catch (e) { resolve(null); }
+	});
+}
+
+async function transcribeAndDeliver(blob, autoSend) {
+	if (!blob) return;
+	sttBusy = true;
+	updateStatus('Transcribing…', '');
+	try {
+		const text = await transcribeBlob(blob);
+		if (text) {
+			setInputText(text);
+			if (autoSend && !isLoading) handleXRSend();
+			else updateStatus(micMode === 'always' ? 'Mic on — listening' : 'Transcribed', micMode === 'always' ? 'connected' : '');
+		} else {
+			updateStatus(micMode === 'always' ? 'Mic on — listening' : 'No speech detected', micMode === 'always' ? 'connected' : '');
+		}
+	} catch (e) {
+		micError(e);
+	} finally {
+		sttBusy = false;
+	}
+}
+
+function micError(e) {
+	console.error('Speech error:', e);
+	const name = e && e.name ? e.name : '';
+	if (name === 'NotAllowedError' || name === 'SecurityError') {
+		updateStatus('Microphone blocked — allow mic access (needs HTTPS/localhost)', 'error');
+	} else if (name === 'NotFoundError') {
+		updateStatus('No microphone found', 'error');
+	} else {
+		updateStatus('Speech error: ' + (e && e.message ? e.message : name || 'unknown'), 'error');
+	}
+	renderInputToCanvas();
+	updateMicButtonDOM();
+}
+
+// --- Voice-activity detection (always-on mode) ---
+// IMPORTANT: this is pumped from the main XR animation loop (pumpVad), NOT from
+// window.requestAnimationFrame — the latter does not fire during an immersive
+// WebXR session, which is why always-on transcription was dead in MR.
+function startVad() {
+	const AC = window.AudioContext || window.webkitAudioContext;
+	vadContext = new AC();
+	const source = vadContext.createMediaStreamSource(micStream);
+	vadAnalyser = vadContext.createAnalyser();
+	vadAnalyser.fftSize = 1024;
+	source.connect(vadAnalyser);
+	vadData = new Float32Array(vadAnalyser.fftSize);
+	vadSpeaking = false;
+	vadSilenceMs = 0;
+	vadLastTime = performance.now();
+}
+
+// One VAD step. Called every frame from renderer.setAnimationLoop so it runs in
+// both the windowed view and immersive MR.
+function pumpVad() {
+	if (micMode !== 'always' || !vadAnalyser) return;
+	vadAnalyser.getFloatTimeDomainData(vadData);
+	let sum = 0;
+	for (let i = 0; i < vadData.length; i++) sum += vadData[i] * vadData[i];
+	const rms = Math.sqrt(sum / vadData.length);
+	const now = performance.now();
+	const dt = now - vadLastTime;
+	vadLastTime = now;
+	if (rms > VAD_RMS_THRESHOLD) {
+		vadSpeaking = true;
+		vadSilenceMs = 0;
+	} else if (vadSpeaking) {
+		vadSilenceMs += dt;
+		if (vadSilenceMs >= VAD_SILENCE_MS && !sttBusy) {
+			segmentUtterance();
+		}
+	}
+}
+
+function stopVad() {
+	if (vadContext) { try { vadContext.close(); } catch (e) { /* ignore */ } vadContext = null; }
+	vadAnalyser = null;
+	vadData = null;
+	vadSpeaking = false;
+	vadSilenceMs = 0;
+}
+
+// End the current utterance, immediately begin capturing the next, and transcribe
+// the finished one in the background.
+async function segmentUtterance() {
+	sttBusy = true; // close the race with the next VAD tick until transcription starts
+	vadSpeaking = false;
+	vadSilenceMs = 0;
+	const blob = await stopUtterance();
+	if (micMode === 'always') startUtterance();
+	await transcribeAndDeliver(blob, true);
+}
+
+// Always-on listening toggle (MIC button + DOM button).
+async function toggleMicAlwaysOn() {
+	if (!speechSupported) {
+		updateStatus('Microphone not available on this device', 'error');
+		return;
+	}
+	if (micMode === 'always') { stopAlwaysOn(); return; }
+	if (micMode === 'ptt') return; // let a push-to-talk finish first
+	micMode = 'always';
+	renderInputToCanvas();
+	updateMicButtonDOM();
+	updateStatus(sttModelReady ? 'Mic on — listening' : 'Loading speech model…', 'connected');
+	try {
+		await ensureMicStream();
+		loadSttPipeline(); // warm the model in the background
+		if (micMode !== 'always') return; // toggled off during setup
+		startVad();
+		startUtterance();
+		updateStatus('Mic on — listening', 'connected');
+	} catch (e) {
+		micMode = 'off';
+		renderInputToCanvas();
+		updateMicButtonDOM();
+		micError(e);
+	}
+}
+
+function stopAlwaysOn() {
+	micMode = 'off';
+	stopVad();
+	if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+		try { mediaRecorder.stop(); } catch (e) { /* ignore */ }
+	}
+	renderInputToCanvas();
+	updateMicButtonDOM();
+	updateStatus('Mic off', '');
+}
+
+// Push-to-talk (controller A/X button). Only engages when always-on is off.
+async function startPTT(hand) {
+	if (!speechSupported) {
+		updateStatus('Microphone not available on this device', 'error');
+		return;
+	}
+	if (micMode !== 'off') return; // busy: already listening (always-on or PTT)
+	micMode = 'ptt';
+	pttHand = hand;
+	renderInputToCanvas();
+	updateMicButtonDOM();
+	updateStatus(sttModelReady ? 'Listening… (push-to-talk)' : 'Loading speech model…', '');
+	try {
+		await ensureMicStream();
+		if (micMode !== 'ptt') return; // released during setup
+		startUtterance();          // capture immediately…
+		loadSttPipeline();          // …while the model warms in the background
+		updateStatus('Listening… (push-to-talk)', '');
+	} catch (e) {
+		micMode = 'off';
+		pttHand = null;
+		micError(e);
+	}
+}
+
+async function stopPTT(hand) {
+	if (micMode !== 'ptt' || hand !== pttHand) return;
+	micMode = 'off';
+	pttHand = null;
+	renderInputToCanvas();
+	updateMicButtonDOM();
+	const blob = await stopUtterance();
+	await transcribeAndDeliver(blob, true);
+}
+
+function updateMicButtonDOM() {
+	const btn = document.getElementById('mic-button');
+	if (!btn) return;
+	btn.classList.toggle('listening', micMode !== 'off');
 }
 
 // ============================================================================
@@ -746,21 +1335,22 @@ function clearUserObjects() {
 
 function rebuildSceneFromActive() {
 	clearUserObjects();
-	// Re-execute loaded scenes first
+	// Re-execute loaded scenes first. executeVrCode is async; we
+	// fire-and-forget here and just log any rejections.
 	for (const sc of loadedScenes) {
 		if (sc.active) {
 			for (const code of sc.codeBlocks) {
-				try { executeVrCode(code); } catch (e) {
+				Promise.resolve(executeVrCode(code)).catch(e => {
 					console.error(`Scene "${sc.name}" error:`, e);
-				}
+				});
 			}
 		}
 	}
 	// Then re-execute current session code
 	for (const code of executedCodeBlocks) {
-		try { executeVrCode(code); } catch (e) {
+		Promise.resolve(executeVrCode(code)).catch(e => {
 			console.error('Session code error:', e);
-		}
+		});
 	}
 }
 
@@ -832,11 +1422,11 @@ function loadSceneFile(file) {
 			};
 			loadedScenes.push(sc);
 
-			// Execute the scene's code blocks
+			// Execute the scene's code blocks (async; surface failures via console)
 			for (const code of sc.codeBlocks) {
-				try { executeVrCode(code); } catch (err) {
+				Promise.resolve(executeVrCode(code)).catch(err => {
 					console.error(`Scene "${sc.name}" load error:`, err);
-				}
+				});
 			}
 
 			loadSceneThumbnails();
@@ -877,9 +1467,9 @@ function loadSceneFromServer() {
 			};
 			loadedScenes.push(sc);
 			for (const code of sc.codeBlocks) {
-				try { executeVrCode(code); } catch (err) {
+				Promise.resolve(executeVrCode(code)).catch(err => {
 					console.error(`Scene "${sc.name}" load error:`, err);
-				}
+				});
 			}
 			loadSceneThumbnails();
 			renderScenePanel();
@@ -1216,7 +1806,9 @@ function setupXRControllers() {
 		// Create a reticle for hit feedback
 		reticles.push(createReticle());
 
-		scene.add(controller);
+		// Controllers ride in the player rig so their rays stay correct as the
+		// user moves/turns via locomotion.
+		player.add(controller);
 	}
 }
 
@@ -1226,6 +1818,17 @@ function onXRSelectStart(event) {
 	tempMatrix.identity().extractRotation(controller.matrixWorld);
 	raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
 	raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+	// UI collapse toggle — head-locked, always available (even when collapsed).
+	if (uiTogglePanel) {
+		const tHits = raycaster.intersectObject(uiTogglePanel);
+		if (tHits.length > 0) {
+			toggleUi();
+			return;
+		}
+	}
+	// When collapsed, the panels are hidden — nothing else is interactable.
+	if (uiCollapsed) return;
 
 	// Check scene manager panel hit
 	if (scenePanel) {
@@ -1245,18 +1848,30 @@ function onXRSelectStart(event) {
 		}
 	}
 
-	// Check input panel hit
+	// Check input panel hit: [input area][MIC][KEYS][Send]
 	if (inputPanel) {
 		const intersects = raycaster.intersectObject(inputPanel);
-		if (intersects.length > 0) {
-			const uv = intersects[0].uv;
-			// Send button is roughly the right ~16% of the panel (150/1024 + margin)
-			if (uv.x > 0.84) {
+		if (intersects.length > 0 && intersects[0].uv) {
+			const L = inputPanelLayout();
+			const cx = intersects[0].uv.x * L.W;
+			if (cx >= L.sendX) {
 				handleXRSend();
-			} else {
-				// Tap on input area — focus the hidden DOM input to trigger system keyboard
-				chatInput.focus();
+			} else if (cx >= L.kbdX && cx < L.kbdX + L.kbdW) {
+				toggleKeyboard();
+			} else if (cx >= L.micX && cx < L.micX + L.micW) {
+				toggleMicAlwaysOn();
 			}
+			// The input area itself is a no-op in XR: text comes from the in-scene
+			// keyboard or the mic, never from focusing the crash-prone DOM input.
+			return;
+		}
+	}
+
+	// Check virtual keyboard hit (only when it's showing)
+	if (keyboardPanel && !keyboardCollapsed) {
+		const kbHits = raycaster.intersectObject(keyboardPanel);
+		if (kbHits.length > 0 && kbHits[0].uv) {
+			handleKeyboardHit(kbHits[0].uv);
 			return;
 		}
 	}
@@ -1299,10 +1914,37 @@ function parseVrExecBlocks(text) {
 
 /**
  * Execute a code string with access to scene globals.
+ * Runs as an AsyncFunction so vr-exec blocks can use top-level await.
+ * Returns a Promise that resolves once the code finishes.
  */
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 function executeVrCode(code) {
-	const fn = new Function('THREE', 'scene', 'camera', 'renderer', 'document', code);
-	fn(THREE, scene, camera, renderer, document);
+	const fn = new AsyncFunction('THREE', 'scene', 'camera', 'renderer', 'document', 'hud', code);
+	// Re-anchor stray HUD objects once the block finishes (success or failure).
+	return Promise.resolve(fn(THREE, scene, camera, renderer, document, hud)).finally(reanchorStrayObjects);
+}
+
+// Safety net: an object that ends up parented to the camera or to a UI panel
+// would move/rotate with the user's view or the chat window. After each block we
+// move any such stray back into the world, preserving its current world transform
+// so it stays put in the room. Objects the model was *directed* to make
+// head-locked go under `hud` (a child of the camera) and are left alone.
+function reanchorStrayObjects() {
+	// Camera: strays follow the head; the intentional `hud` group is exempt.
+	for (let i = camera.children.length - 1; i >= 0; i--) {
+		const child = camera.children[i];
+		if (child === hud) continue;
+		scene.attach(child); // reparent to the scene root, keeping world transform
+	}
+	// UI panels never legitimately have child meshes, so anything parented to one
+	// is a stray object that would ride along with the window — re-anchor it.
+	const panels = [chatPanel, inputPanel, keyboardPanel, sidePanel, scenePanel];
+	for (const panel of panels) {
+		if (!panel) continue;
+		for (let i = panel.children.length - 1; i >= 0; i--) {
+			scene.attach(panel.children[i]);
+		}
+	}
 }
 
 const MAX_FIX_ATTEMPTS = 3;
@@ -1362,7 +2004,7 @@ async function attemptAutoFix(failingCode, errorMessage, errorStack) {
 
 			// Try executing the fixed code
 			try {
-				executeVrCode(fixedCode);
+				await executeVrCode(fixedCode);
 				return { success: true, code: fixedCode, attempts: attempt };
 			} catch (retryErr) {
 				// This fix also failed — record it and try again
@@ -1395,11 +2037,14 @@ async function sendMessage(userMessage) {
 	messages.push({ role: 'user', content: userMessage });
 	displayMessages.push({ role: 'user', content: userMessage });
 	chatScrollOffset = 0; // auto-scroll to bottom on new message
-	renderChatToCanvas();
 
+	// Set loading state BEFORE rendering so the "Claude is thinking..." indicator
+	// is drawn immediately — otherwise it only appears on the next render (which
+	// previously required a click/interaction to trigger).
 	isLoading = true;
 	sendButton.disabled = true;
 	updateStatus('Sending...', '');
+	renderChatToCanvas();
 
 	try {
 		const response = await fetch('/api/chat', {
@@ -1441,7 +2086,7 @@ async function sendMessage(userMessage) {
 			let fixCount = 0;
 			for (const code of codeBlocks) {
 				try {
-					executeVrCode(code);
+					await executeVrCode(code);
 					executedCodeBlocks.push(code);
 					execCount++;
 				} catch (execErr) {
@@ -1498,6 +2143,242 @@ async function sendMessage(userMessage) {
 function updateStatus(text, className) {
 	statusElement.textContent = text;
 	statusElement.className = className || '';
+	updateHudStatus(text, className);
+}
+
+// ============================================================================
+// Head-locked HUD status badge (mirrors the DOM #status notification in VR/AR)
+// ============================================================================
+// A small badge parented to `hud` (a child of the camera), so head/motion
+// tracking keeps it pinned to the view. It sits in the lower-right periphery —
+// out of the focused center of vision — and only appears for active/transient
+// states, so the stage stays clean and it's cheap (the canvas is redrawn only
+// when the status text changes, and it's a tiny always-on-top plane).
+function createHudStatus() {
+	hudStatusCanvas = document.createElement('canvas');
+	hudStatusCanvas.width = 512;
+	hudStatusCanvas.height = 128;
+	hudStatusContext = hudStatusCanvas.getContext('2d');
+
+	hudStatusTexture = new THREE.CanvasTexture(hudStatusCanvas);
+	hudStatusTexture.minFilter = THREE.LinearFilter;
+	hudStatusTexture.magFilter = THREE.LinearFilter;
+
+	const geo = new THREE.PlaneGeometry(0.2, 0.05);
+	const mat = new THREE.MeshBasicMaterial({
+		map: hudStatusTexture,
+		transparent: true,
+		depthTest: false,  // draw over the scene like a notification overlay
+		depthWrite: false
+	});
+	hudStatusPanel = new THREE.Mesh(geo, mat);
+	// Head-locked, lower-right periphery, ~0.9 m ahead. As a child of `hud` it
+	// inherits the camera's orientation, so it always faces the user.
+	hudStatusPanel.position.set(0.4, -0.25, -0.9);
+	hudStatusPanel.renderOrder = 999;
+	hudStatusPanel.visible = false;
+	hud.add(hudStatusPanel);
+}
+
+function renderHudStatus(text, className) {
+	if (!hudStatusContext) return;
+	const ctx = hudStatusContext;
+	const W = hudStatusCanvas.width;
+	const H = hudStatusCanvas.height;
+
+	ctx.clearRect(0, 0, W, H);
+
+	let bg = 'rgba(30, 30, 40, 0.90)';
+	let dot = '#6366f1';
+	if (className === 'error') { bg = 'rgba(70, 22, 22, 0.92)'; dot = '#ef4444'; }
+	else if (className === 'connected') { bg = 'rgba(18, 48, 34, 0.92)'; dot = '#10b981'; }
+
+	ctx.fillStyle = bg;
+	roundRect(ctx, 0, 0, W, H, 28);
+	ctx.fill();
+
+	// Status dot
+	ctx.beginPath();
+	ctx.arc(44, H / 2, 15, 0, Math.PI * 2);
+	ctx.fillStyle = dot;
+	ctx.fill();
+
+	// Text, truncated to fit
+	ctx.fillStyle = '#ffffff';
+	ctx.font = '38px -apple-system, BlinkMacSystemFont, sans-serif';
+	ctx.textAlign = 'left';
+	ctx.textBaseline = 'middle';
+	let t = text;
+	const maxW = W - 96;
+	if (ctx.measureText(t).width > maxW) {
+		while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+		t += '…';
+	}
+	ctx.fillText(t, 76, H / 2 + 2);
+	ctx.textBaseline = 'alphabetic';
+
+	hudStatusTexture.needsUpdate = true;
+}
+
+// Show the badge for active/transient states; hide for idle to keep the view clean.
+function updateHudStatus(text, className) {
+	if (!hudStatusPanel) return;
+	const idle = !text || text === 'Ready' || text === 'Connected';
+	hudStatusPanel.visible = !idle;
+	if (!idle) renderHudStatus(text, className);
+}
+
+// ============================================================================
+// Collapse-all-UI toggle (head-locked button, works even when the UI is hidden)
+// ============================================================================
+function createUiToggle() {
+	uiToggleCanvas = document.createElement('canvas');
+	uiToggleCanvas.width = 384;
+	uiToggleCanvas.height = 128;
+	uiToggleContext = uiToggleCanvas.getContext('2d');
+
+	uiToggleTexture = new THREE.CanvasTexture(uiToggleCanvas);
+	uiToggleTexture.minFilter = THREE.LinearFilter;
+	uiToggleTexture.magFilter = THREE.LinearFilter;
+
+	const geo = new THREE.PlaneGeometry(0.14, 0.047);
+	const mat = new THREE.MeshBasicMaterial({
+		map: uiToggleTexture,
+		transparent: true,
+		depthTest: false,  // always drawn on top so it's reachable over any scene
+		depthWrite: false
+	});
+	uiTogglePanel = new THREE.Mesh(geo, mat);
+	// Head-locked, upper-right — always in reach even when the panels are hidden.
+	uiTogglePanel.position.set(0.34, 0.2, -0.85);
+	uiTogglePanel.renderOrder = 999;
+	hud.add(uiTogglePanel);
+
+	renderUiToggle();
+}
+
+function renderUiToggle() {
+	if (!uiToggleContext) return;
+	const ctx = uiToggleContext;
+	const W = uiToggleCanvas.width;
+	const H = uiToggleCanvas.height;
+
+	ctx.clearRect(0, 0, W, H);
+	ctx.fillStyle = uiCollapsed ? '#6366f1' : 'rgba(30, 30, 40, 0.9)';
+	roundRect(ctx, 0, 0, W, H, 28);
+	ctx.fill();
+
+	ctx.fillStyle = '#ffffff';
+	ctx.font = 'bold 44px -apple-system, BlinkMacSystemFont, sans-serif';
+	ctx.textAlign = 'center';
+	ctx.textBaseline = 'middle';
+	ctx.fillText(uiCollapsed ? 'Show UI' : 'Hide UI', W / 2, H / 2 + 2);
+	ctx.textAlign = 'left';
+	ctx.textBaseline = 'alphabetic';
+
+	uiToggleTexture.needsUpdate = true;
+}
+
+// Hide/show every main panel (3D) and the DOM chat overlay (windowed view). The
+// head-locked toggle button and the status badge stay visible so the UI can
+// always be brought back.
+function setUiCollapsed(collapsed) {
+	uiCollapsed = collapsed;
+	const show = !collapsed;
+	if (chatPanel) chatPanel.visible = show;
+	if (inputPanel) inputPanel.visible = show;
+	if (sidePanel) sidePanel.visible = show;
+	if (scenePanel) scenePanel.visible = show;
+	// The keyboard also respects its own collapsed state when the UI is shown.
+	if (keyboardPanel) keyboardPanel.visible = show && !keyboardCollapsed;
+
+	const chatOverlay = document.getElementById('chat-overlay');
+	if (chatOverlay) chatOverlay.style.display = show ? '' : 'none';
+
+	renderUiToggle();
+	updateUiToggleDOM();
+	updateStatus(collapsed ? 'UI hidden' : '', '');
+}
+
+function toggleUi() {
+	setUiCollapsed(!uiCollapsed);
+}
+
+function updateUiToggleDOM() {
+	const btn = document.getElementById('ui-toggle');
+	if (btn) btn.textContent = uiCollapsed ? 'Show UI' : 'Hide UI';
+}
+
+// ============================================================================
+// Locomotion (left thumbstick = move, right thumbstick = turn)
+// ============================================================================
+// Modes cycle Off → Planar → Free-roam:
+//   • off    — thumbsticks scroll the chat / scene list (original behavior).
+//   • planar — left stick moves on the horizontal plane (in/out + strafe)
+//              relative to where you're looking; no vertical.
+//   • free   — left stick flies in the full look direction (incl. up/down).
+// Right stick turns (yaw) in both movement modes, pivoting around your head.
+const _locoQuat = new THREE.Quaternion();
+const _locoForward = new THREE.Vector3();
+const _locoRight = new THREE.Vector3();
+const _locoMove = new THREE.Vector3();
+const _locoHead = new THREE.Vector3();
+const _LOCO_UP = new THREE.Vector3(0, 1, 0);
+
+function cycleLocomotionMode() {
+	locomotionMode = locomotionMode === 'off' ? 'planar'
+		: locomotionMode === 'planar' ? 'free' : 'off';
+	const label = locomotionMode === 'off' ? 'Locomotion off — thumbsticks scroll'
+		: locomotionMode === 'planar' ? 'Locomotion: planar (left move · right turn)'
+		: 'Locomotion: free-roam (left fly · right turn)';
+	updateStatus(label, locomotionMode === 'off' ? '' : 'connected');
+}
+
+function updateLocomotion(dt, session) {
+	if (!player || locomotionMode === 'off' || dt <= 0) return;
+
+	const xrCam = renderer.xr.getCamera();
+	let mx = 0, my = 0, rx = 0; // left x/y (move), right x (turn)
+	for (const source of session.inputSources) {
+		const gp = source.gamepad;
+		if (!gp || !gp.axes) continue;
+		const axes = gp.axes;
+		const ax = axes.length >= 4 ? axes[2] : (axes[0] || 0);
+		const ay = axes.length >= 4 ? axes[3] : (axes[1] || 0);
+		if (source.handedness === 'left') {
+			// This controller reports the left thumbstick's horizontal and vertical
+			// axes transposed, so swap them: strafe reads the vertical axis and
+			// forward/back reads the horizontal axis.
+			if (Math.abs(ay) > THUMBSTICK_DEADZONE) mx = ay;
+			if (Math.abs(ax) > THUMBSTICK_DEADZONE) my = ax;
+		} else if (source.handedness === 'right') {
+			if (Math.abs(ax) > THUMBSTICK_DEADZONE) rx = ax;
+		}
+	}
+
+	// Movement (left stick), relative to head facing.
+	if (mx !== 0 || my !== 0) {
+		xrCam.getWorldQuaternion(_locoQuat);
+		_locoForward.set(0, 0, -1).applyQuaternion(_locoQuat);
+		_locoRight.set(1, 0, 0).applyQuaternion(_locoQuat);
+		if (locomotionMode === 'planar') {
+			_locoForward.y = 0; _locoRight.y = 0;
+			_locoForward.normalize(); _locoRight.normalize();
+		}
+		_locoMove.set(0, 0, 0)
+			.addScaledVector(_locoForward, -my) // push up = forward
+			.addScaledVector(_locoRight, mx)    // push right = strafe right
+			.multiplyScalar(MOVE_SPEED * dt);
+		player.position.add(_locoMove);
+	}
+
+	// Turn (right stick x), yaw around the user's head so the view doesn't swing.
+	if (rx !== 0) {
+		const angle = -rx * TURN_SPEED * dt;
+		xrCam.getWorldPosition(_locoHead);
+		player.position.sub(_locoHead).applyAxisAngle(_LOCO_UP, angle).add(_locoHead);
+		player.rotateY(angle);
+	}
 }
 
 // ============================================================================
@@ -1522,6 +2403,25 @@ chatInput.addEventListener('keydown', (e) => {
 	}
 });
 
+// Collapse-all-UI: wire the DOM toggle button (windowed view).
+const uiToggleBtn = document.getElementById('ui-toggle');
+if (uiToggleBtn) uiToggleBtn.addEventListener('click', toggleUi);
+
+// Speech-to-text: detect capture support and wire the DOM mic toggle.
+initSpeech();
+const micButton = document.getElementById('mic-button');
+if (micButton) {
+	micButton.addEventListener('click', toggleMicAlwaysOn);
+	if (!speechSupported) {
+		// Only happens with no MediaRecorder/getUserMedia (very old browsers) or a
+		// non-secure context that hides mediaDevices entirely.
+		micButton.disabled = true;
+		micButton.title = 'Microphone capture not available (needs a secure context)';
+	} else {
+		micButton.title = 'Toggle always-on voice input (in-browser Whisper)';
+	}
+}
+
 // ============================================================================
 // Window Resize
 // ============================================================================
@@ -1538,16 +2438,20 @@ window.addEventListener('resize', onWindowResize);
 // ============================================================================
 function positionAllPanels(chatY) {
 	const inputY = chatY - CHAT_PANEL_HEIGHT / 2 - INPUT_PANEL_GAP - INPUT_PANEL_HEIGHT / 2;
+	const kbY = inputY - INPUT_PANEL_HEIGHT / 2 - KEYBOARD_PANEL_GAP - KEYBOARD_PANEL_HEIGHT / 2;
 	const sideX = CHAT_PANEL_WIDTH / 2 + SIDE_PANEL_GAP + SIDE_PANEL_WIDTH / 2;
 	const sceneX = -(CHAT_PANEL_WIDTH / 2 + SCENE_PANEL_GAP + SCENE_PANEL_WIDTH / 2);
 	if (chatPanel) chatPanel.position.set(0, chatY, -CHAT_PANEL_DISTANCE);
 	if (inputPanel) inputPanel.position.set(0, inputY, -CHAT_PANEL_DISTANCE);
+	if (keyboardPanel) keyboardPanel.position.set(0, kbY, -CHAT_PANEL_DISTANCE);
 	if (sidePanel) sidePanel.position.set(sideX, chatY, -CHAT_PANEL_DISTANCE);
 	if (scenePanel) scenePanel.position.set(sceneX, chatY, -CHAT_PANEL_DISTANCE);
 }
 
 renderer.xr.addEventListener('sessionstart', () => {
-	positionAllPanels(0.2);
+	// 'local-floor' reference space: origin at the real floor, eye level
+	// is around y=1.6, so anchor panels just below eye level for comfort.
+	positionAllPanels(1.4);
 });
 
 renderer.xr.addEventListener('sessionend', () => {
@@ -1563,8 +2467,11 @@ renderer.xr.addEventListener('sessionend', () => {
 // ============================================================================
 createChatPanel();
 createInputPanel();
+createKeyboardPanel();
 createSidePanel();
 createScenePanel();
+createHudStatus();
+createUiToggle();
 
 // Snapshot system objects so we can distinguish user-created objects later
 snapshotSystemObjects();
@@ -1579,35 +2486,45 @@ const _rayOrigin = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
 const _hitRaycaster = new THREE.Raycaster();
 const _hitTargets = []; // populated after panels exist
+// Previous per-hand button-pressed state, for edge detection (ray toggle) and
+// hold detection (push-to-talk). Keyed by handedness → button index → bool.
+const _prevButtons = { left: {}, right: {} };
 
 renderer.setAnimationLoop((time) => {
+	// Frame delta (seconds), clamped so a paused/backgrounded tab doesn't jump.
+	const dt = _locoPrevTime ? Math.min(0.1, (time - _locoPrevTime) / 1000) : 0;
+	_locoPrevTime = time;
+
+	// Voice-activity detection for always-on mic. Driven here (not via
+	// window.requestAnimationFrame, which is paused during immersive sessions) so
+	// transcription segmentation works in MR as well as the windowed view.
+	pumpVad();
+
 	// Billboard effect: panels face the camera while staying upright
 	if (renderer.xr.isPresenting) {
 		const xrCamera = renderer.xr.getCamera();
 		const cameraWorldPos = new THREE.Vector3();
 		xrCamera.getWorldPosition(cameraWorldPos);
 
-		if (chatPanel) {
-			chatPanel.lookAt(cameraWorldPos);
-		}
-		if (inputPanel) {
-			inputPanel.lookAt(cameraWorldPos);
-		}
-		if (sidePanel) {
-			sidePanel.lookAt(cameraWorldPos);
-		}
-		if (scenePanel) {
-			scenePanel.lookAt(cameraWorldPos);
-		}
+		if (chatPanel) chatPanel.lookAt(cameraWorldPos);
+		if (inputPanel) inputPanel.lookAt(cameraWorldPos);
+		if (keyboardPanel) keyboardPanel.lookAt(cameraWorldPos);
+		if (sidePanel) sidePanel.lookAt(cameraWorldPos);
+		if (scenePanel) scenePanel.lookAt(cameraWorldPos);
 
-		// Build hit-target list (panels that exist)
+		// Build hit-target list (panels that exist and are showing)
 		_hitTargets.length = 0;
-		if (scenePanel) _hitTargets.push(scenePanel);
-		if (sidePanel) _hitTargets.push(sidePanel);
-		if (inputPanel) _hitTargets.push(inputPanel);
-		if (chatPanel) _hitTargets.push(chatPanel);
+		if (uiTogglePanel) _hitTargets.push(uiTogglePanel); // always reachable
+		if (!uiCollapsed) {
+			if (scenePanel) _hitTargets.push(scenePanel);
+			if (sidePanel) _hitTargets.push(sidePanel);
+			if (inputPanel) _hitTargets.push(inputPanel);
+			if (keyboardPanel && !keyboardCollapsed) _hitTargets.push(keyboardPanel);
+			if (chatPanel) _hitTargets.push(chatPanel);
+		}
 
-		// Update reticles per controller
+		// Update reticles per controller; track keyboard hover across both hands.
+		let frameKbHover = -1;
 		for (let i = 0; i < 2; i++) {
 			const controller = renderer.xr.getController(i);
 			const reticle = reticles[i];
@@ -1632,12 +2549,21 @@ renderer.setAnimationLoop((time) => {
 				reticle.visible = true;
 
 				// Highlight color based on what's being aimed at
-				if (hit.object === scenePanel) {
+				if (hit.object === uiTogglePanel) {
+					reticle.material.color.setHex(0x8b5cf6); // purple — UI toggle
+				} else if (hit.object === scenePanel) {
 					reticle.material.color.setHex(0xf59e0b); // amber for scene panel
 				} else if (hit.object === sidePanel) {
 					reticle.material.color.setHex(0x10b981); // green for side panel
-				} else if (hit.object === inputPanel && hit.uv && hit.uv.x > 0.84) {
-					reticle.material.color.setHex(0x8b5cf6); // purple — send
+				} else if (hit.object === keyboardPanel) {
+					reticle.material.color.setHex(0x6366f1); // indigo
+					if (hit.uv) frameKbHover = keyIndexAtUV(hit.uv);
+				} else if (hit.object === inputPanel && hit.uv) {
+					const L = inputPanelLayout();
+					const cx = hit.uv.x * L.W;
+					if (cx >= L.sendX) reticle.material.color.setHex(0x8b5cf6); // purple — send
+					else if (cx >= L.micX) reticle.material.color.setHex(0x22d3ee); // cyan — mic/keys buttons
+					else reticle.material.color.setHex(0x6366f1); // indigo
 				} else {
 					reticle.material.color.setHex(0x6366f1); // indigo
 				}
@@ -1645,27 +2571,64 @@ renderer.setAnimationLoop((time) => {
 				reticle.visible = false;
 			}
 		}
-		// Poll thumbsticks for scrolling
+		// Apply keyboard hover (re-renders only when the hovered key changes)
+		setKeyboardHover(keyboardCollapsed ? -1 : frameKbHover);
+		// Poll thumbsticks (scrolling) and buttons (ray toggle + push-to-talk)
 		const session = renderer.xr.getSession();
 		if (session) {
 			for (const source of session.inputSources) {
-				const axes = source.gamepad ? source.gamepad.axes : null;
-				if (!axes) continue;
-				const thumbY = axes.length >= 4 ? axes[3] : (axes.length >= 2 ? axes[1] : 0);
+				const gp = source.gamepad;
+				const hand = source.handedness;
 
-				if (source.handedness === 'right' && Math.abs(thumbY) > THUMBSTICK_DEADZONE) {
-					// Right thumbstick: scroll chat
-					chatScrollOffset += thumbY < 0 ? SCROLL_SPEED : -SCROLL_SPEED;
-					chatScrollOffset = Math.max(0, chatScrollOffset);
-					renderChatToCanvas();
+				if (gp && (hand === 'left' || hand === 'right')) {
+					const prev = _prevButtons[hand];
+					// B / Y button (index 5): toggle pointer ray lines on press (edge).
+					const b5 = !!(gp.buttons[5] && gp.buttons[5].pressed);
+					if (b5 && !prev[5]) toggleRayVisibility();
+					prev[5] = b5;
+					// A / X button (index 4): push-to-talk — listen while held.
+					const b4 = !!(gp.buttons[4] && gp.buttons[4].pressed);
+					if (b4 && !prev[4]) startPTT(hand);
+					if (!b4 && prev[4]) stopPTT(hand);
+					prev[4] = b4;
+					// Thumbstick press (index 3): collapse / restore all UI. A reliable
+					// fallback for the head-locked Hide/Show-UI button.
+					const b3 = !!(gp.buttons[3] && gp.buttons[3].pressed);
+					if (b3 && !prev[3]) toggleUi();
+					prev[3] = b3;
+					// Grip / squeeze (index 1), right hand: cycle locomotion mode
+					// (off → planar → free-roam).
+					if (hand === 'right') {
+						const b1 = !!(gp.buttons[1] && gp.buttons[1].pressed);
+						if (b1 && !prev[1]) cycleLocomotionMode();
+						prev[1] = b1;
+					}
 				}
-				if (source.handedness === 'left' && Math.abs(thumbY) > THUMBSTICK_DEADZONE) {
-					// Left thumbstick: scroll scene list
-					sceneScrollOffset += thumbY < 0 ? 1 : -1;
-					sceneScrollOffset = Math.max(0, sceneScrollOffset);
-					renderScenePanel();
+
+				// Thumbsticks scroll only while locomotion is off; otherwise they
+				// drive movement/turning (handled by updateLocomotion below).
+				if (locomotionMode === 'off') {
+					const axes = gp ? gp.axes : null;
+					if (!axes) continue;
+					const thumbY = axes.length >= 4 ? axes[3] : (axes.length >= 2 ? axes[1] : 0);
+
+					if (hand === 'right' && Math.abs(thumbY) > THUMBSTICK_DEADZONE) {
+						// Right thumbstick: scroll chat
+						chatScrollOffset += thumbY < 0 ? SCROLL_SPEED : -SCROLL_SPEED;
+						chatScrollOffset = Math.max(0, chatScrollOffset);
+						renderChatToCanvas();
+					}
+					if (hand === 'left' && Math.abs(thumbY) > THUMBSTICK_DEADZONE) {
+						// Left thumbstick: scroll scene list
+						sceneScrollOffset += thumbY < 0 ? 1 : -1;
+						sceneScrollOffset = Math.max(0, sceneScrollOffset);
+						renderScenePanel();
+					}
 				}
 			}
+
+			// Locomotion: left stick moves, right stick turns.
+			updateLocomotion(dt, session);
 		}
 	} else {
 		// Hide reticles outside XR

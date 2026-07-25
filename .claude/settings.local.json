@@ -4,7 +4,10 @@
       "Bash(node -c main.js)",
       "Bash(nslookup:*)",
       "Bash(node:*)",
-      "Bash(find 'C:/Users/KROSS/Desktop/programming projects/VRClaudeInterface' -type d ! -path */node_modules/* ! -path */.git/*)"
+      "Bash(find 'C:/Users/KROSS/Desktop/programming projects/VRClaudeInterface' -type d ! -path */node_modules/* ! -path */.git/*)",
+      "Bash(python *)",
+      "Bash(rm -v \"C:/Users/KROSS/Desktop/programming projects/VRClaudeInterface/site-source/model_server.py\" \"C:/Users/KROSS/Desktop/programming projects/VRClaudeInterface/site-source/requirements.txt\")",
+      "Bash(rm -rv \"C:/Users/KROSS/Desktop/programming projects/VRClaudeInterface/site-source/generated_models\")"
     ]
   }
 }

@@ -71,6 +71,32 @@
 			transition: transform 0.1s, opacity 0.2s;
 		}
 
+		#mic-button {
+			padding: 12px 14px;
+			font-size: 16px;
+			border: none;
+			border-radius: 12px;
+			background: rgba(255, 255, 255, 0.12);
+			color: #fff;
+			cursor: pointer;
+			transition: transform 0.1s, background 0.2s;
+		}
+
+		#mic-button.listening {
+			background: #ef4444;
+			animation: micpulse 1.2s ease-in-out infinite;
+		}
+
+		#mic-button:disabled {
+			opacity: 0.4;
+			cursor: not-allowed;
+		}
+
+		@keyframes micpulse {
+			0%, 100% { opacity: 1; }
+			50% { opacity: 0.55; }
+		}
+
 		#send-button:hover {
 			transform: scale(1.05);
 		}
@@ -212,6 +238,22 @@
 		}
 
 		/* Status indicator */
+		#ui-toggle {
+			position: fixed;
+			top: 20px;
+			left: 20px;
+			z-index: 1500;
+			padding: 8px 14px;
+			border: none;
+			border-radius: 8px;
+			background: rgba(30, 30, 40, 0.9);
+			color: #fff;
+			font-size: 14px;
+			font-weight: 600;
+			cursor: pointer;
+			pointer-events: auto;
+		}
+
 		#status {
 			position: fixed;
 			top: 20px;
@@ -239,6 +281,7 @@
 	<!-- DOM Overlay elements for AR -->
 	<div id="overlay-root">
 		<div id="status">Ready</div>
+		<button id="ui-toggle">Hide UI</button>
 
 		<!-- Scene file input (hidden) -->
 		<input type="file" id="scene-file-input" multiple accept=".vrscene,.json,*" />
@@ -268,6 +311,7 @@
 		<div id="chat-overlay">
 			<div id="chat-input-container">
 				<input type="text" id="chat-input" placeholder="Ask Claude something..." autocomplete="off" />
+				<button id="mic-button" title="Toggle always-on voice input">🎤</button>
 				<button id="send-button">Send</button>
 			</div>
 		</div>
