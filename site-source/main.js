@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ARButton } from './threejsAddons/ARButton.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // ============================================================================
 // Configuration
@@ -43,6 +44,17 @@ renderer.xr.enabled = true;
 appElement.appendChild(renderer.domElement);
 renderer.setClearColor(0x000000, 0.0);
 
+// Desktop (non-XR) camera controls: orbit/pan/zoom with the mouse. Disabled
+// automatically while an XR session is presenting (the headset pose drives
+// the camera then) — see setImmersiveUiMode.
+const orbitControls = new OrbitControls(camera, renderer.domElement);
+orbitControls.target.set(0, 1.4, -CHAT_PANEL_DISTANCE);
+orbitControls.enableDamping = true;
+orbitControls.dampingFactor = 0.08;
+orbitControls.minDistance = 0.5;
+orbitControls.maxDistance = 50;
+orbitControls.update();
+
 // ============================================================================
 // DOM Elements
 // ============================================================================
@@ -50,6 +62,27 @@ const overlayRoot = document.getElementById('overlay-root');
 const chatInput = document.getElementById('chat-input');
 const sendButton = document.getElementById('send-button');
 const statusElement = document.getElementById('status');
+const desktopChat = document.getElementById('desktop-chat');
+const desktopChatHeader = document.getElementById('desktop-chat-header');
+const desktopChatMessages = document.getElementById('desktop-chat-messages');
+const desktopChatInput = document.getElementById('desktop-chat-input');
+const desktopSendButton = document.getElementById('desktop-send-button');
+const desktopMicButton = document.getElementById('desktop-mic-button');
+const desktopChatMinimizeBtn = document.getElementById('desktop-chat-minimize');
+const desktopChatReopenBtn = document.getElementById('desktop-chat-reopen');
+const chatOverlayBar = document.getElementById('chat-overlay');
+const dchatEnvModeAr = document.getElementById('dchat-env-ar');
+const dchatEnvModeVr = document.getElementById('dchat-env-vr');
+const dchatEnvControls = document.getElementById('dchat-env-controls');
+const dchatColorPicker = document.getElementById('dchat-color-picker');
+const dchatColorPreview = document.getElementById('dchat-color-preview');
+const dchatBrightness = document.getElementById('dchat-brightness');
+const dchatResetCameraBtn = document.getElementById('dchat-reset-camera');
+const dchatExportBtn = document.getElementById('dchat-export-btn');
+const dchatImportBtn = document.getElementById('dchat-import-btn');
+const dchatLoadServerBtn = document.getElementById('dchat-load-server-btn');
+const dchatSceneList = document.getElementById('dchat-scene-list');
+const dchatExportCombinedBtn = document.getElementById('dchat-export-combined');
 
 // ============================================================================
 // State
@@ -211,6 +244,7 @@ function createChatPanel() {
 }
 
 function renderChatToCanvas() {
+	renderDomChat();
 	if (!chatContext) return;
 
 	const ctx = chatContext;
@@ -336,6 +370,26 @@ function renderChatToCanvas() {
 	}
 
 	chatTexture.needsUpdate = true;
+}
+
+// Renders the same message list into the desktop (non-XR) DOM chat window.
+function renderDomChat() {
+	if (!desktopChatMessages) return;
+
+	desktopChatMessages.innerHTML = '';
+	for (const msg of displayMessages) {
+		const bubble = document.createElement('div');
+		bubble.className = 'dchat-msg ' + (msg.role === 'user' ? 'user' : 'assistant');
+		bubble.textContent = msg.content;
+		desktopChatMessages.appendChild(bubble);
+	}
+	if (isLoading) {
+		const thinking = document.createElement('div');
+		thinking.className = 'dchat-msg thinking';
+		thinking.textContent = 'Claude is thinking...';
+		desktopChatMessages.appendChild(thinking);
+	}
+	desktopChatMessages.scrollTop = desktopChatMessages.scrollHeight;
 }
 
 function wrapText(ctx, text, maxWidth) {
@@ -993,9 +1047,10 @@ async function stopPTT(hand) {
 }
 
 function updateMicButtonDOM() {
+	const listening = micMode !== 'off';
 	const btn = document.getElementById('mic-button');
-	if (!btn) return;
-	btn.classList.toggle('listening', micMode !== 'off');
+	if (btn) btn.classList.toggle('listening', listening);
+	if (desktopMicButton) desktopMicButton.classList.toggle('listening', listening);
 }
 
 // ============================================================================
@@ -1031,7 +1086,28 @@ function hslToRgbString(h, s, l) {
 	return `hsl(${h}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
 }
 
+function hslToHex(h, s, l) {
+	const c = new THREE.Color();
+	c.setHSL(h / 360, s, l);
+	return '#' + c.getHexString();
+}
+
+// Mirrors the AR/VR + color/brightness controls (canvas side panel, VR-only)
+// into the desktop Environment tab. Safe to call before the desktop DOM
+// exists (e.g. not yet — guarded by null checks below).
+function renderDomEnv() {
+	if (!dchatEnvModeAr) return;
+	dchatEnvModeAr.classList.toggle('active', !isVRMode);
+	dchatEnvModeVr.classList.toggle('active', isVRMode);
+	dchatEnvControls.classList.toggle('disabled', !isVRMode);
+	const hex = hslToHex(vrBgHue, vrBgSat, vrBgLight);
+	dchatColorPicker.value = hex;
+	dchatColorPreview.style.background = hex;
+	dchatBrightness.value = Math.round(vrBgLight * 100);
+}
+
 function renderSidePanel() {
+	renderDomEnv();
 	if (!sideContext) return;
 
 	const ctx = sideContext;
@@ -1513,7 +1589,62 @@ function createScenePanel() {
 	renderScenePanel();
 }
 
+// Mirrors the loaded-scenes list (canvas scene panel, VR-only) into the
+// desktop Scenes tab: checkbox toggles active, × removes, thumbnail if any.
+function renderDomSceneList() {
+	if (!dchatSceneList) return;
+
+	dchatSceneList.innerHTML = '';
+	if (loadedScenes.length === 0) {
+		const empty = document.createElement('div');
+		empty.className = 'dchat-scene-empty';
+		empty.textContent = 'No scenes loaded. Use Import File or Load Saved.';
+		dchatSceneList.appendChild(empty);
+	} else {
+		for (let i = 0; i < loadedScenes.length; i++) {
+			const sc = loadedScenes[i];
+			const item = document.createElement('div');
+			item.className = 'dchat-scene-item' + (sc.active ? ' active' : '');
+
+			const checkbox = document.createElement('input');
+			checkbox.type = 'checkbox';
+			checkbox.checked = sc.active;
+			checkbox.addEventListener('change', () => {
+				sc.active = checkbox.checked;
+				rebuildSceneFromActive();
+				renderScenePanel();
+			});
+
+			const thumb = document.createElement('img');
+			thumb.className = 'dchat-scene-thumb';
+			if (sc.thumbnail) thumb.src = sc.thumbnail;
+
+			const name = document.createElement('div');
+			name.className = 'dchat-scene-name';
+			name.textContent = sc.name;
+			name.title = sc.name;
+
+			const remove = document.createElement('button');
+			remove.className = 'dchat-scene-remove';
+			remove.textContent = '×';
+			remove.title = 'Remove scene';
+			remove.addEventListener('click', () => {
+				loadedScenes.splice(i, 1);
+				rebuildSceneFromActive();
+				renderScenePanel();
+			});
+
+			item.append(checkbox, thumb, name, remove);
+			dchatSceneList.appendChild(item);
+		}
+	}
+
+	const hasContent = loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0;
+	dchatExportCombinedBtn.classList.toggle('visible', hasContent && loadedScenes.length > 0);
+}
+
 function renderScenePanel() {
+	renderDomSceneList();
 	if (!sceneContext) return;
 
 	const ctx = sceneContext;
@@ -2284,16 +2415,21 @@ function renderUiToggle() {
 // always be brought back.
 function setUiCollapsed(collapsed) {
 	uiCollapsed = collapsed;
+	const immersive = renderer.xr.isPresenting;
 	const show = !collapsed;
-	if (chatPanel) chatPanel.visible = show;
-	if (inputPanel) inputPanel.visible = show;
-	if (sidePanel) sidePanel.visible = show;
-	if (scenePanel) scenePanel.visible = show;
-	// The keyboard also respects its own collapsed state when the UI is shown.
-	if (keyboardPanel) keyboardPanel.visible = show && !keyboardCollapsed;
+	if (immersive) {
+		if (chatPanel) chatPanel.visible = show;
+		if (inputPanel) inputPanel.visible = show;
+		if (sidePanel) sidePanel.visible = show;
+		if (scenePanel) scenePanel.visible = show;
+		// The keyboard also respects its own collapsed state when the UI is shown.
+		if (keyboardPanel) keyboardPanel.visible = show && !keyboardCollapsed;
 
-	const chatOverlay = document.getElementById('chat-overlay');
-	if (chatOverlay) chatOverlay.style.display = show ? '' : 'none';
+		const chatOverlay = document.getElementById('chat-overlay');
+		if (chatOverlay) chatOverlay.style.display = show ? '' : 'none';
+	} else {
+		setDesktopChatMinimized(collapsed);
+	}
 
 	renderUiToggle();
 	updateUiToggleDOM();
@@ -2423,6 +2559,248 @@ if (micButton) {
 }
 
 // ============================================================================
+// Desktop (non-AR) chat window: movable, resizable, floats over the 3D scene
+// ============================================================================
+desktopSendButton.addEventListener('click', () => {
+	const message = desktopChatInput.value.trim();
+	if (message) {
+		sendMessage(message);
+		desktopChatInput.value = '';
+	}
+});
+
+desktopChatInput.addEventListener('keydown', (e) => {
+	if (e.key === 'Enter' && !e.shiftKey) {
+		e.preventDefault();
+		const message = desktopChatInput.value.trim();
+		if (message) {
+			sendMessage(message);
+			desktopChatInput.value = '';
+		}
+	}
+});
+
+if (desktopMicButton) {
+	desktopMicButton.addEventListener('click', toggleMicAlwaysOn);
+	if (!speechSupported) {
+		desktopMicButton.disabled = true;
+		desktopMicButton.title = 'Microphone capture not available (needs a secure context)';
+	} else {
+		desktopMicButton.title = 'Toggle always-on voice input (in-browser Whisper)';
+	}
+}
+
+if (desktopChatMinimizeBtn) {
+	desktopChatMinimizeBtn.addEventListener('click', () => setDesktopChatMinimized(true));
+}
+if (desktopChatReopenBtn) {
+	desktopChatReopenBtn.addEventListener('click', () => setDesktopChatMinimized(false));
+}
+
+function setDesktopChatMinimized(minimized) {
+	desktopChat.classList.toggle('hidden', minimized);
+	if (desktopChatReopenBtn) desktopChatReopenBtn.classList.toggle('visible', minimized);
+}
+
+// Dragging via the header. Uses document-level mouse listeners (rather than
+// pointer capture) so it keeps tracking even if the cursor briefly leaves the
+// header while moving fast.
+(function initDesktopChatDrag() {
+	let dragging = false;
+	let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+	desktopChatHeader.addEventListener('mousedown', (e) => {
+		if (e.target.closest('#desktop-chat-header-buttons')) return;
+		dragging = true;
+		desktopChat.classList.add('dragging');
+		const rect = desktopChat.getBoundingClientRect();
+		startX = e.clientX;
+		startY = e.clientY;
+		startLeft = rect.left;
+		startTop = rect.top;
+		e.preventDefault();
+	});
+
+	document.addEventListener('mousemove', (e) => {
+		if (!dragging) return;
+		const rect = desktopChat.getBoundingClientRect();
+		let newLeft = startLeft + (e.clientX - startX);
+		let newTop = startTop + (e.clientY - startY);
+		newLeft = Math.max(0, Math.min(window.innerWidth - rect.width, newLeft));
+		newTop = Math.max(0, Math.min(window.innerHeight - rect.height, newTop));
+		desktopChat.style.left = `${newLeft}px`;
+		desktopChat.style.top = `${newTop}px`;
+	});
+
+	document.addEventListener('mouseup', () => {
+		if (!dragging) return;
+		dragging = false;
+		desktopChat.classList.remove('dragging');
+	});
+})();
+
+// Resizing via any edge or corner (hold and drag). Each handle carries a
+// data-dir of which sides move: n/s/e/w or a combination for corners.
+(function initDesktopChatResize() {
+	const MIN_W = 280, MIN_H = 220;
+	let resizing = false;
+	let dir = '';
+	let startX = 0, startY = 0, startWidth = 0, startHeight = 0, startLeft = 0, startTop = 0;
+
+	document.querySelectorAll('.dchat-resize').forEach(handle => {
+		handle.addEventListener('mousedown', (e) => {
+			resizing = true;
+			dir = handle.dataset.dir;
+			desktopChat.classList.add('resizing');
+			const rect = desktopChat.getBoundingClientRect();
+			startX = e.clientX;
+			startY = e.clientY;
+			startWidth = rect.width;
+			startHeight = rect.height;
+			startLeft = rect.left;
+			startTop = rect.top;
+			e.preventDefault();
+		});
+	});
+
+	document.addEventListener('mousemove', (e) => {
+		if (!resizing) return;
+		const dx = e.clientX - startX;
+		const dy = e.clientY - startY;
+
+		if (dir.includes('e')) {
+			const newWidth = Math.max(MIN_W, Math.min(window.innerWidth - startLeft, startWidth + dx));
+			desktopChat.style.width = `${newWidth}px`;
+		}
+		if (dir.includes('s')) {
+			const newHeight = Math.max(MIN_H, Math.min(window.innerHeight - startTop, startHeight + dy));
+			desktopChat.style.height = `${newHeight}px`;
+		}
+		if (dir.includes('w')) {
+			const maxDx = startWidth - MIN_W;
+			const minDx = -startLeft;
+			const clampedDx = Math.max(minDx, Math.min(maxDx, dx));
+			desktopChat.style.width = `${startWidth - clampedDx}px`;
+			desktopChat.style.left = `${startLeft + clampedDx}px`;
+		}
+		if (dir.includes('n')) {
+			const maxDy = startHeight - MIN_H;
+			const minDy = -startTop;
+			const clampedDy = Math.max(minDy, Math.min(maxDy, dy));
+			desktopChat.style.height = `${startHeight - clampedDy}px`;
+			desktopChat.style.top = `${startTop + clampedDy}px`;
+		}
+	});
+
+	document.addEventListener('mouseup', () => {
+		if (!resizing) return;
+		resizing = false;
+		dir = '';
+		desktopChat.classList.remove('resizing');
+	});
+})();
+
+// Ctrl+Arrow snaps the chat window to the nearest screen edge (or corner
+// with a diagonal-feeling combo: press twice, once per axis). Only active
+// when not immersive and not typing in a text field.
+document.addEventListener('keydown', (e) => {
+	if (!e.ctrlKey) return;
+	const arrowDirs = { ArrowLeft: 'w', ArrowRight: 'e', ArrowUp: 'n', ArrowDown: 's' };
+	const dir = arrowDirs[e.key];
+	if (!dir) return;
+	if (desktopChat.classList.contains('hidden')) return;
+	if (renderer.xr.isPresenting) return;
+	const activeTag = document.activeElement && document.activeElement.tagName;
+	if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
+
+	e.preventDefault();
+	const rect = desktopChat.getBoundingClientRect();
+	const margin = 8;
+	let left = rect.left, top = rect.top;
+	if (dir === 'w') left = margin;
+	if (dir === 'e') left = window.innerWidth - rect.width - margin;
+	if (dir === 'n') top = margin;
+	if (dir === 's') top = window.innerHeight - rect.height - margin;
+	desktopChat.style.left = `${left}px`;
+	desktopChat.style.top = `${top}px`;
+});
+
+// Tabs: Chat / Environment / Scenes.
+document.querySelectorAll('.dchat-tab').forEach(tab => {
+	tab.addEventListener('click', () => {
+		document.querySelectorAll('.dchat-tab').forEach(t => t.classList.remove('active'));
+		document.querySelectorAll('.dchat-panel').forEach(p => p.classList.remove('active'));
+		tab.classList.add('active');
+		document.getElementById(`dchat-panel-${tab.dataset.tab}`).classList.add('active');
+	});
+});
+
+// Environment tab: AR/VR toggle, color picker, brightness slider — mirrors
+// the VR-only canvas side panel (handleSidePanelHit) onto the desktop.
+dchatEnvModeAr.addEventListener('click', () => {
+	isVRMode = false;
+	applyEnvironmentMode();
+	renderSidePanel();
+});
+dchatEnvModeVr.addEventListener('click', () => {
+	isVRMode = true;
+	applyEnvironmentMode();
+	renderSidePanel();
+});
+dchatColorPicker.addEventListener('input', () => {
+	const hex = dchatColorPicker.value;
+	const c = new THREE.Color(hex);
+	const hsl = { h: 0, s: 0, l: 0 };
+	c.getHSL(hsl);
+	vrBgHue = hsl.h * 360;
+	vrBgSat = hsl.s;
+	vrBgLight = hsl.l;
+	applyEnvironmentMode();
+	renderSidePanel();
+});
+dchatBrightness.addEventListener('input', () => {
+	vrBgLight = Math.max(0.02, Math.min(0.95, Number(dchatBrightness.value) / 100));
+	applyEnvironmentMode();
+	renderSidePanel();
+});
+dchatResetCameraBtn.addEventListener('click', () => {
+	camera.position.set(0, 1.6, 0);
+	orbitControls.target.set(0, 1.4, -CHAT_PANEL_DISTANCE);
+	orbitControls.update();
+});
+
+// Scenes tab: export / import / load-from-server — mirrors the VR-only
+// canvas scene panel (handleScenePanelHit) onto the desktop.
+dchatExportBtn.addEventListener('click', () => showExportModal(false));
+dchatImportBtn.addEventListener('click', () => fileInput.click());
+dchatLoadServerBtn.addEventListener('click', () => loadSceneFromServer());
+dchatExportCombinedBtn.addEventListener('click', () => {
+	if ((loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0) && loadedScenes.length > 0) {
+		showExportModal(true);
+	}
+});
+
+// Switches between the desktop chat window (windowed browser) and the slim
+// dom-overlay bar (AR/VR immersive session), and shows/hides the legacy 3D
+// canvas panels accordingly — the desktop window replaces them entirely.
+function setImmersiveUiMode(immersive) {
+	const panels = [chatPanel, inputPanel, sidePanel, scenePanel];
+	for (const p of panels) if (p) p.visible = immersive;
+	if (keyboardPanel) keyboardPanel.visible = immersive && !keyboardCollapsed;
+	// The head-locked hud (status badge + Hide/Show-UI panel) only makes sense
+	// with a headset; the desktop equivalents are the DOM #status pill and
+	// #ui-toggle button, already shown outside the 3D scene.
+	hud.visible = immersive;
+	// Mouse orbit/pan/zoom only makes sense windowed — the headset pose drives
+	// the camera during an XR session.
+	orbitControls.enabled = !immersive;
+
+	desktopChat.classList.toggle('hidden', immersive || uiCollapsed);
+	if (desktopChatReopenBtn) desktopChatReopenBtn.classList.toggle('visible', !immersive && uiCollapsed);
+	chatOverlayBar.classList.toggle('visible', immersive);
+}
+
+// ============================================================================
 // Window Resize
 // ============================================================================
 function onWindowResize() {
@@ -2452,6 +2830,7 @@ renderer.xr.addEventListener('sessionstart', () => {
 	// 'local-floor' reference space: origin at the real floor, eye level
 	// is around y=1.6, so anchor panels just below eye level for comfort.
 	positionAllPanels(1.4);
+	setImmersiveUiMode(true);
 });
 
 renderer.xr.addEventListener('sessionend', () => {
@@ -2460,6 +2839,7 @@ renderer.xr.addEventListener('sessionend', () => {
 	isVRMode = false;
 	applyEnvironmentMode();
 	renderSidePanel();
+	setImmersiveUiMode(false);
 });
 
 // ============================================================================
@@ -2472,6 +2852,10 @@ createSidePanel();
 createScenePanel();
 createHudStatus();
 createUiToggle();
+
+// Start in windowed (non-XR) mode: the desktop chat window is the UI, and the
+// legacy 3D canvas panels stay hidden until an AR/VR session starts.
+setImmersiveUiMode(false);
 
 // Snapshot system objects so we can distinguish user-created objects later
 snapshotSystemObjects();
@@ -2499,6 +2883,8 @@ renderer.setAnimationLoop((time) => {
 	// window.requestAnimationFrame, which is paused during immersive sessions) so
 	// transcription segmentation works in MR as well as the windowed view.
 	pumpVad();
+
+	if (orbitControls.enabled) orbitControls.update();
 
 	// Billboard effect: panels face the camera while staying upright
 	if (renderer.xr.isPresenting) {

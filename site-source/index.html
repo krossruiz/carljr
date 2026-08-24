@@ -18,7 +18,7 @@
 			background: none;
 		}
 
-		/* DOM Overlay for AR/VR chat interface */
+		/* DOM Overlay for AR/VR chat interface (slim bar shown only in an XR session) */
 		#chat-overlay {
 			position: fixed;
 			bottom: 80px;
@@ -28,7 +28,452 @@
 			max-width: 600px;
 			z-index: 1000;
 			pointer-events: auto;
+			display: none;
 		}
+
+		#chat-overlay.visible { display: block; }
+
+		/* ==================================================================
+		   Desktop chat window — movable, resizable, floats over the 3D scene
+		   ================================================================== */
+		#desktop-chat {
+			position: fixed;
+			top: 80px;
+			left: 24px;
+			width: 380px;
+			height: 520px;
+			min-width: 280px;
+			min-height: 220px;
+			max-width: calc(100vw - 24px);
+			max-height: calc(100vh - 24px);
+			display: flex;
+			flex-direction: column;
+			background: rgba(22, 22, 32, 0.82);
+			border: 1px solid rgba(255, 255, 255, 0.08);
+			border-radius: 18px;
+			box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+			backdrop-filter: blur(18px);
+			-webkit-backdrop-filter: blur(18px);
+			overflow: hidden;
+			z-index: 1000;
+			pointer-events: auto;
+			color: #fff;
+		}
+
+		#desktop-chat.hidden { display: none; }
+
+		#desktop-chat.dragging, #desktop-chat.resizing {
+			user-select: none;
+			transition: none;
+		}
+
+		#desktop-chat-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 12px 14px;
+			background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(139, 92, 246, 0.25));
+			cursor: grab;
+			flex-shrink: 0;
+			border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+			user-select: none;
+		}
+
+		#desktop-chat-header:active { cursor: grabbing; }
+
+		#desktop-chat-tabs {
+			display: flex;
+			gap: 4px;
+			padding: 8px 10px 0;
+			flex-shrink: 0;
+			background: rgba(255, 255, 255, 0.03);
+		}
+
+		.dchat-tab {
+			border: none;
+			background: transparent;
+			color: rgba(255, 255, 255, 0.5);
+			font-size: 12px;
+			font-weight: 600;
+			padding: 7px 10px;
+			border-radius: 8px 8px 0 0;
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			gap: 5px;
+			transition: background 0.15s, color 0.15s;
+		}
+
+		.dchat-tab:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+
+		.dchat-tab.active {
+			background: rgba(255, 255, 255, 0.09);
+			color: #fff;
+		}
+
+		.dchat-panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
+		.dchat-panel.active { display: flex; }
+
+		#desktop-chat-title {
+			font-size: 14px;
+			font-weight: 700;
+			letter-spacing: 0.2px;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		#desktop-chat-title .dot {
+			width: 8px;
+			height: 8px;
+			border-radius: 50%;
+			background: #10b981;
+			flex-shrink: 0;
+		}
+
+		#desktop-chat-header-buttons {
+			display: flex;
+			gap: 6px;
+		}
+
+		#desktop-chat-header-buttons button {
+			width: 24px;
+			height: 24px;
+			border: none;
+			border-radius: 7px;
+			background: rgba(255, 255, 255, 0.12);
+			color: #fff;
+			font-size: 13px;
+			line-height: 1;
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			transition: background 0.15s;
+		}
+
+		#desktop-chat-header-buttons button:hover {
+			background: rgba(255, 255, 255, 0.25);
+		}
+
+		#desktop-chat-messages {
+			flex: 1;
+			overflow-y: auto;
+			padding: 14px;
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			font-size: 14px;
+			line-height: 1.45;
+			min-height: 0;
+		}
+
+		#desktop-chat-messages::-webkit-scrollbar { width: 8px; }
+		#desktop-chat-messages::-webkit-scrollbar-thumb {
+			background: rgba(255, 255, 255, 0.15);
+			border-radius: 4px;
+		}
+
+		.dchat-msg {
+			max-width: 88%;
+			padding: 9px 13px;
+			border-radius: 14px;
+			white-space: pre-wrap;
+			word-break: break-word;
+		}
+
+		.dchat-msg.user {
+			align-self: flex-end;
+			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			color: #fff;
+			border-bottom-right-radius: 4px;
+		}
+
+		.dchat-msg.assistant {
+			align-self: flex-start;
+			background: rgba(255, 255, 255, 0.08);
+			color: #e8e8ec;
+			border-bottom-left-radius: 4px;
+		}
+
+		.dchat-msg.thinking {
+			align-self: flex-start;
+			font-style: italic;
+			color: rgba(255, 255, 255, 0.55);
+			background: none;
+			padding: 4px 4px;
+		}
+
+		/* --- Environment tab (AR/VR background toggle + color + brightness) --- */
+		#dchat-env {
+			overflow-y: auto;
+			padding: 16px;
+			display: flex;
+			flex-direction: column;
+			gap: 16px;
+			font-size: 13px;
+		}
+
+		.dchat-section-label {
+			font-size: 11px;
+			text-transform: uppercase;
+			letter-spacing: 0.6px;
+			color: rgba(255, 255, 255, 0.4);
+			font-weight: 700;
+		}
+
+		#dchat-env-mode {
+			display: flex;
+			gap: 6px;
+			background: rgba(255, 255, 255, 0.06);
+			border-radius: 10px;
+			padding: 4px;
+		}
+
+		#dchat-env-mode button {
+			flex: 1;
+			border: none;
+			background: transparent;
+			color: rgba(255, 255, 255, 0.5);
+			font-weight: 700;
+			font-size: 13px;
+			padding: 8px 0;
+			border-radius: 8px;
+			cursor: pointer;
+			transition: background 0.15s, color 0.15s;
+		}
+
+		#dchat-env-mode button.active.ar { background: rgba(16, 185, 129, 0.35); color: #10b981; }
+		#dchat-env-mode button.active.vr { background: rgba(99, 102, 241, 0.35); color: #a5b4fc; }
+
+		.dchat-color-row { display: flex; align-items: center; gap: 10px; }
+
+		#dchat-color-picker {
+			width: 44px;
+			height: 44px;
+			padding: 0;
+			border: none;
+			border-radius: 10px;
+			background: none;
+			cursor: pointer;
+		}
+
+		#dchat-color-preview {
+			flex: 1;
+			height: 44px;
+			border-radius: 10px;
+			border: 1px solid rgba(255, 255, 255, 0.1);
+		}
+
+		#dchat-brightness {
+			width: 100%;
+			accent-color: #8b5cf6;
+		}
+
+		.dchat-disabled-note {
+			font-size: 12px;
+			color: rgba(255, 255, 255, 0.35);
+			font-style: italic;
+		}
+
+		#dchat-env-controls.disabled { opacity: 0.4; pointer-events: none; }
+
+		.dchat-btn {
+			border: none;
+			border-radius: 10px;
+			color: #fff;
+			font-weight: 600;
+			font-size: 13px;
+			padding: 10px;
+			cursor: pointer;
+			transition: transform 0.1s, opacity 0.2s;
+		}
+
+		.dchat-btn:hover { transform: scale(1.02); }
+		.dchat-btn:active { transform: scale(0.98); }
+		.dchat-btn.secondary { background: rgba(255, 255, 255, 0.1); }
+		.dchat-btn.accent { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+
+		/* --- Scenes tab (export / load / manage saved scenes) --- */
+		#dchat-scenes { padding: 14px; gap: 10px; overflow: hidden; }
+
+		#dchat-scenes-buttons { display: flex; gap: 8px; flex-shrink: 0; }
+		#dchat-scenes-buttons .dchat-btn { flex: 1; }
+		#dchat-scenes-buttons .dchat-btn.export { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+		#dchat-scenes-buttons .dchat-btn.import { background: rgba(255, 255, 255, 0.1); }
+		#dchat-scenes-buttons .dchat-btn.load { background: linear-gradient(135deg, #10b981, #059669); }
+
+		#dchat-scene-list {
+			flex: 1;
+			overflow-y: auto;
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			min-height: 0;
+		}
+
+		#dchat-scene-list::-webkit-scrollbar { width: 8px; }
+		#dchat-scene-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+
+		.dchat-scene-empty {
+			text-align: center;
+			color: rgba(255, 255, 255, 0.3);
+			font-size: 13px;
+			padding: 24px 0;
+		}
+
+		.dchat-scene-item {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			background: rgba(255, 255, 255, 0.04);
+			border-radius: 10px;
+			padding: 8px;
+		}
+
+		.dchat-scene-item.active { background: rgba(99, 102, 241, 0.15); }
+
+		.dchat-scene-item input[type="checkbox"] {
+			width: 18px;
+			height: 18px;
+			accent-color: #6366f1;
+			flex-shrink: 0;
+			cursor: pointer;
+		}
+
+		.dchat-scene-thumb {
+			width: 36px;
+			height: 36px;
+			border-radius: 6px;
+			object-fit: cover;
+			background: rgba(255, 255, 255, 0.08);
+			flex-shrink: 0;
+		}
+
+		.dchat-scene-name {
+			flex: 1;
+			font-size: 13px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.dchat-scene-remove {
+			border: none;
+			background: rgba(239, 68, 68, 0.25);
+			color: #ef4444;
+			font-weight: 700;
+			width: 24px;
+			height: 24px;
+			border-radius: 6px;
+			cursor: pointer;
+			flex-shrink: 0;
+		}
+
+		.dchat-scene-remove:hover { background: rgba(239, 68, 68, 0.4); }
+
+		#dchat-export-combined { flex-shrink: 0; background: linear-gradient(135deg, #f59e0b, #d97706); display: none; }
+		#dchat-export-combined.visible { display: block; }
+
+		#desktop-chat-input-row {
+			display: flex;
+			gap: 8px;
+			padding: 12px;
+			border-top: 1px solid rgba(255, 255, 255, 0.06);
+			flex-shrink: 0;
+		}
+
+		#desktop-chat-input {
+			flex: 1;
+			min-width: 0;
+			padding: 10px 13px;
+			font-size: 14px;
+			border: none;
+			border-radius: 11px;
+			background: rgba(255, 255, 255, 0.1);
+			color: #fff;
+			outline: none;
+		}
+
+		#desktop-chat-input::placeholder { color: rgba(255, 255, 255, 0.45); }
+		#desktop-chat-input:focus { background: rgba(255, 255, 255, 0.15); }
+
+		#desktop-mic-button, #desktop-send-button {
+			border: none;
+			border-radius: 11px;
+			color: #fff;
+			cursor: pointer;
+			font-size: 14px;
+			padding: 10px 14px;
+			transition: transform 0.1s, opacity 0.2s, background 0.2s;
+			flex-shrink: 0;
+		}
+
+		#desktop-mic-button {
+			background: rgba(255, 255, 255, 0.12);
+			padding: 10px 12px;
+		}
+
+		#desktop-mic-button.listening {
+			background: #ef4444;
+			animation: micpulse 1.2s ease-in-out infinite;
+		}
+
+		#desktop-mic-button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+		#desktop-send-button {
+			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+			font-weight: 600;
+		}
+
+		#desktop-send-button:hover { transform: scale(1.05); }
+		#desktop-send-button:active { transform: scale(0.95); }
+		#desktop-send-button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+		/* Edge/corner resize handles — hold and drag any side or corner. */
+		.dchat-resize {
+			position: absolute;
+			z-index: 5;
+		}
+
+		.dchat-resize.edge-n, .dchat-resize.edge-s { left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
+		.dchat-resize.edge-n { top: -4px; }
+		.dchat-resize.edge-s { bottom: -4px; }
+
+		.dchat-resize.edge-e, .dchat-resize.edge-w { top: 10px; bottom: 10px; width: 8px; cursor: ew-resize; }
+		.dchat-resize.edge-e { right: -4px; }
+		.dchat-resize.edge-w { left: -4px; }
+
+		.dchat-resize.corner { width: 16px; height: 16px; }
+		.dchat-resize.corner-nw { top: -4px; left: -4px; cursor: nwse-resize; }
+		.dchat-resize.corner-ne { top: -4px; right: -4px; cursor: nesw-resize; }
+		.dchat-resize.corner-sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
+		.dchat-resize.corner-se {
+			bottom: 0;
+			right: 0;
+			cursor: nwse-resize;
+			background:
+				linear-gradient(135deg, transparent 0%, transparent 45%, rgba(255,255,255,0.35) 45%, rgba(255,255,255,0.35) 55%, transparent 55%, transparent 65%, rgba(255,255,255,0.35) 65%, rgba(255,255,255,0.35) 75%, transparent 75%);
+		}
+
+		#desktop-chat-reopen {
+			position: fixed;
+			top: 80px;
+			left: 24px;
+			z-index: 1000;
+			padding: 8px 14px;
+			border: none;
+			border-radius: 8px;
+			background: rgba(30, 30, 40, 0.9);
+			color: #fff;
+			font-size: 13px;
+			font-weight: 600;
+			cursor: pointer;
+			pointer-events: auto;
+			display: none;
+		}
+
+		#desktop-chat-reopen.visible { display: block; }
 
 		#chat-input-container {
 			display: flex;
@@ -316,6 +761,83 @@
 			</div>
 		</div>
 	</div>
+
+	<!-- Desktop (non-AR) chat window: movable, resizable, floats over the 3D scene -->
+	<div id="desktop-chat">
+		<div id="desktop-chat-header">
+			<div id="desktop-chat-title"><span class="dot"></span>Claude</div>
+			<div id="desktop-chat-header-buttons">
+				<button id="desktop-chat-minimize" title="Minimize">&#95;</button>
+			</div>
+		</div>
+		<div id="desktop-chat-tabs">
+			<button class="dchat-tab active" data-tab="chat">💬 Chat</button>
+			<button class="dchat-tab" data-tab="env">🎨 Environment</button>
+			<button class="dchat-tab" data-tab="scenes">📁 Scenes</button>
+		</div>
+
+		<div id="dchat-panel-chat" class="dchat-panel active">
+			<div id="desktop-chat-messages"></div>
+			<div id="desktop-chat-input-row">
+				<input type="text" id="desktop-chat-input" placeholder="Ask Claude something..." autocomplete="off" />
+				<button id="desktop-mic-button" title="Toggle always-on voice input">🎤</button>
+				<button id="desktop-send-button">Send</button>
+			</div>
+		</div>
+
+		<div id="dchat-panel-env" class="dchat-panel">
+			<div id="dchat-env">
+				<div>
+					<div class="dchat-section-label" style="margin-bottom:6px">Environment</div>
+					<div id="dchat-env-mode">
+						<button id="dchat-env-ar" class="active ar">AR (passthrough)</button>
+						<button id="dchat-env-vr" class="vr">VR (color)</button>
+					</div>
+				</div>
+				<div id="dchat-env-controls" class="disabled">
+					<div class="dchat-section-label" style="margin-bottom:8px">Background Color</div>
+					<div class="dchat-color-row">
+						<input type="color" id="dchat-color-picker" value="#6366f1" />
+						<div id="dchat-color-preview"></div>
+					</div>
+					<div style="margin-top:12px">
+						<div class="dchat-section-label" style="margin-bottom:8px">Brightness</div>
+						<input type="range" id="dchat-brightness" min="2" max="95" value="50" />
+					</div>
+					<div class="dchat-disabled-note" style="margin-top:8px">Switch to VR to customize the background.</div>
+				</div>
+				<div>
+					<div class="dchat-section-label" style="margin-bottom:8px">Camera</div>
+					<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-bottom:8px">
+						Drag to orbit &middot; scroll to zoom &middot; right-drag to pan.
+					</div>
+					<button id="dchat-reset-camera" class="dchat-btn secondary" style="width:100%">Reset Camera View</button>
+				</div>
+			</div>
+		</div>
+
+		<div id="dchat-panel-scenes" class="dchat-panel">
+			<div id="dchat-scenes" style="display:flex;flex-direction:column;flex:1;min-height:0">
+				<div id="dchat-scenes-buttons">
+					<button id="dchat-export-btn" class="dchat-btn export">Export</button>
+					<button id="dchat-import-btn" class="dchat-btn import">Import File</button>
+					<button id="dchat-load-server-btn" class="dchat-btn load">Load Saved</button>
+				</div>
+				<div id="dchat-scene-list"></div>
+				<button id="dchat-export-combined" class="dchat-btn">Export Combined</button>
+			</div>
+		</div>
+
+		<div class="dchat-resize edge-n" data-dir="n"></div>
+		<div class="dchat-resize edge-s" data-dir="s"></div>
+		<div class="dchat-resize edge-e" data-dir="e"></div>
+		<div class="dchat-resize edge-w" data-dir="w"></div>
+		<div class="dchat-resize corner corner-nw" data-dir="nw"></div>
+		<div class="dchat-resize corner corner-ne" data-dir="ne"></div>
+		<div class="dchat-resize corner corner-sw" data-dir="sw"></div>
+		<div class="dchat-resize corner corner-se" data-dir="se"></div>
+	</div>
+	<button id="desktop-chat-reopen">Show Chat</button>
 
 	<script type="importmap">
 	{
