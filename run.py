@@ -305,6 +305,11 @@ def cmd_start(api_key=None, api_key_file=None, use_ollama=False, ollama_model=No
         cprint(ERR_COL, "'node' not found on PATH — install Node.js.")
         return 1
 
+    # All configured backends are available at once now (the browser's model
+    # dropdown picks per-request), so this just decides the *default* backend
+    # and makes sure its key is present — any OPENAI_API_KEY already set in
+    # this shell is passed through regardless of which flags were given, so
+    # OpenAI shows up in the dropdown too whenever it's configured.
     if use_ollama:
         chosen_model = ollama_model or pick_ollama_model()
         backend_env = {
@@ -313,12 +318,20 @@ def cmd_start(api_key=None, api_key_file=None, use_ollama=False, ollama_model=No
         }
     else:
         resolved_key = resolve_api_key(api_key, api_key_file)
-        if not resolved_key:
+        if not resolved_key and not os.environ.get("OPENAI_API_KEY"):
             cprint(ERR_COL,
-                   "No Claude API key supplied — pass --api-key, --api-key-file, "
-                   "or use --ollama for a local model.")
+                   "No Claude API key supplied and no OPENAI_API_KEY set — pass "
+                   "--api-key, --api-key-file, set OPENAI_API_KEY, or use --ollama "
+                   "for a local model.")
             return 1
-        backend_env = {"LLM_BACKEND": "claude", "CLAUDE_API_KEY": resolved_key}
+        backend_env = {"LLM_BACKEND": "claude" if resolved_key else "openai"}
+        if resolved_key:
+            backend_env["CLAUDE_API_KEY"] = resolved_key
+
+    if os.environ.get("OPENAI_API_KEY"):
+        backend_env["OPENAI_API_KEY"] = os.environ["OPENAI_API_KEY"]
+    if os.environ.get("OPENAI_MODEL"):
+        backend_env["OPENAI_MODEL"] = os.environ["OPENAI_MODEL"]
 
     if port is not None:
         backend_env["PORT"] = str(port)

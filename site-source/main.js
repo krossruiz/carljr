@@ -68,6 +68,7 @@ const desktopChatMessages = document.getElementById('desktop-chat-messages');
 const desktopChatInput = document.getElementById('desktop-chat-input');
 const desktopSendButton = document.getElementById('desktop-send-button');
 const desktopMicButton = document.getElementById('desktop-mic-button');
+const desktopModelSelect = document.getElementById('desktop-model-select');
 const desktopChatMinimizeBtn = document.getElementById('desktop-chat-minimize');
 const desktopChatReopenBtn = document.getElementById('desktop-chat-reopen');
 const chatOverlayBar = document.getElementById('chat-overlay');
@@ -90,6 +91,7 @@ const dchatExportCombinedBtn = document.getElementById('dchat-export-combined');
 let messages = [];       // Full messages for API context (includes raw code blocks)
 let displayMessages = []; // Cleaned messages for canvas display
 let isLoading = false;
+let selectedBackend = null; // 'claude' | 'openai' | 'ollama' - set once /api/backends resolves
 let chatPanel = null;
 let chatTexture = null;
 let chatCanvas = null;
@@ -2102,7 +2104,8 @@ async function attemptAutoFix(failingCode, errorMessage, errorStack) {
 					errorMessage,
 					errorStack,
 					attempt,
-					priorFixes
+					priorFixes,
+					backend: selectedBackend
 				})
 			});
 
@@ -2189,7 +2192,8 @@ async function sendMessage(userMessage) {
 				messages: messages.map(m => ({
 					role: m.role,
 					content: m.content
-				}))
+				})),
+				backend: selectedBackend
 			})
 		});
 
@@ -2559,6 +2563,40 @@ if (micButton) {
 		micButton.title = 'Toggle always-on voice input (in-browser Whisper)';
 	}
 }
+
+// ============================================================================
+// Model selector: populated from whichever backends the server has API keys
+// for (GET /api/backends). Selecting an option is sent along with every
+// /api/chat and /api/fix-code request as `backend`.
+// ============================================================================
+async function initModelSelect() {
+	if (!desktopModelSelect) return;
+	try {
+		const res = await fetch('/api/backends');
+		const { backends, default: defaultBackend } = await res.json();
+
+		desktopModelSelect.innerHTML = '';
+		for (const [id, info] of Object.entries(backends)) {
+			const opt = document.createElement('option');
+			opt.value = id;
+			opt.textContent = info.available ? info.label : `${info.label} — no API key set`;
+			opt.disabled = !info.available;
+			desktopModelSelect.appendChild(opt);
+		}
+
+		const firstAvailable = Object.entries(backends).find(([, info]) => info.available)?.[0];
+		selectedBackend = backends[defaultBackend]?.available ? defaultBackend : (firstAvailable || defaultBackend);
+		desktopModelSelect.value = selectedBackend;
+	} catch (err) {
+		console.error('Failed to load /api/backends:', err);
+	}
+}
+
+desktopModelSelect?.addEventListener('change', () => {
+	selectedBackend = desktopModelSelect.value;
+});
+
+initModelSelect();
 
 // ============================================================================
 // Desktop (non-AR) chat window: movable, resizable, floats over the 3D scene

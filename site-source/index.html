@@ -114,6 +114,20 @@
 		.dchat-panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
 		.dchat-panel.active { display: flex; }
 
+		#desktop-model-row {
+			display: flex; align-items: center; gap: 8px;
+			padding: 8px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+			flex-shrink: 0;
+		}
+		#desktop-model-row label { font-size: 12px; color: rgba(255, 255, 255, 0.55); }
+		#desktop-model-select {
+			flex: 1; background: rgba(255, 255, 255, 0.08); color: #fff;
+			border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px;
+			font-size: 12px; padding: 4px 6px;
+		}
+		#desktop-model-select option { background: #1f2030; color: #fff; }
+		#desktop-model-select option:disabled { color: rgba(255, 255, 255, 0.35); }
+
 		#desktop-chat-title {
 			font-size: 14px;
 			font-weight: 700;
@@ -777,6 +791,10 @@
 		</div>
 
 		<div id="dchat-panel-chat" class="dchat-panel active">
+			<div id="desktop-model-row">
+				<label for="desktop-model-select">Model:</label>
+				<select id="desktop-model-select"></select>
+			</div>
 			<div id="desktop-chat-messages"></div>
 			<div id="desktop-chat-input-row">
 				<input type="text" id="desktop-chat-input" placeholder="Ask Claude something..." autocomplete="off" />

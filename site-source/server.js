@@ -21,26 +21,38 @@ const PORT = process.env.PORT || 3000;
 // it. The server therefore always listens over HTTPS (self-signed cert,
 // generated on first run).
 
-// Which model backend to use: 'claude' (default) or 'ollama'. Set by run.py
-// based on the --ollama / --api-key flags.
+// Which model backend to use by default: 'claude', 'openai', or 'ollama'.
+// The client can override this per-request (see the model dropdown in the
+// chat UI) - this is just the fallback when a request doesn't specify one.
 const LLM_BACKEND = (process.env.LLM_BACKEND || 'claude').toLowerCase();
 const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-6-astra';
 
-// Get API key from environment variable (only required for the Claude backend)
+// API keys - each backend is only usable if its key is configured. This
+// intentionally does NOT exit at startup when a key is missing: unlike the
+// old single-backend design, several backends can be available at once now
+// (selected per-request from the client dropdown), so a missing OpenAI key
+// should just gray out that option, not crash the whole server.
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-if (LLM_BACKEND === 'claude' && !CLAUDE_API_KEY) {
-	console.error('\x1b[31mError: CLAUDE_API_KEY environment variable is not set.\x1b[0m');
-	console.error('Set it before running the server:');
-	console.error('  Windows:  set CLAUDE_API_KEY=your-key-here');
-	console.error('  Mac/Linux: export CLAUDE_API_KEY=your-key-here');
-	console.error('Or run with --ollama to use a local Ollama model instead.');
-	process.exit(1);
+// Backend id -> { label, available } - sent to the client so it can build
+// the model dropdown from whatever's actually configured.
+function getAvailableBackends() {
+	return {
+		claude: { label: 'Claude (Sonnet 5)', available: !!CLAUDE_API_KEY },
+		openai: { label: `OpenAI (${OPENAI_MODEL})`, available: !!OPENAI_API_KEY },
+		ollama: { label: `Ollama (${OLLAMA_MODEL}, local)`, available: true },
+	};
 }
 
-if (LLM_BACKEND === 'ollama') {
-	console.log(`\x1b[36mUsing local Ollama model "${OLLAMA_MODEL}" at ${OLLAMA_HOST}\x1b[0m`);
+if (!CLAUDE_API_KEY && !OPENAI_API_KEY) {
+	console.error('\x1b[31mWarning: neither CLAUDE_API_KEY nor OPENAI_API_KEY is set.\x1b[0m');
+	console.error('Set at least one before running the server, e.g.:');
+	console.error('  Windows:  set CLAUDE_API_KEY=your-key-here');
+	console.error('  Mac/Linux: export CLAUDE_API_KEY=your-key-here');
+	console.error('Or select Ollama in the model dropdown to use a local model instead.');
 }
 
 // Middleware
@@ -281,23 +293,83 @@ function callOllamaAPI(systemPrompt, messages, maxTokens = 16384) {
 	});
 }
 
-// Dispatches to whichever backend is configured, keeping a uniform response shape.
-function callLLM(systemPrompt, messages, maxTokens = 16384) {
-	return LLM_BACKEND === 'ollama'
-		? callOllamaAPI(systemPrompt, messages, maxTokens)
-		: callClaudeAPI(systemPrompt, messages, maxTokens);
+// Shared function: call the OpenAI API and normalize the response into the
+// same { content: [{ text }] } shape the client expects from Claude.
+function callOpenAIAPI(systemPrompt, messages, maxTokens = 16384) {
+	return new Promise((resolve, reject) => {
+		const postBody = JSON.stringify({
+			model: OPENAI_MODEL,
+			max_completion_tokens: maxTokens,
+			messages: [
+				{ role: 'system', content: systemPrompt },
+				...messages.map(m => ({ role: m.role, content: m.content }))
+			]
+		});
+
+		const apiReq = https.request({
+			hostname: 'api.openai.com',
+			path: '/v1/chat/completions',
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Bearer ${OPENAI_API_KEY}`,
+				'Content-Length': Buffer.byteLength(postBody)
+			}
+		}, (apiRes) => {
+			let body = '';
+			apiRes.on('data', (chunk) => body += chunk);
+			apiRes.on('end', () => {
+				try {
+					const parsed = JSON.parse(body);
+					if (apiRes.statusCode >= 400) {
+						resolve({ error: true, status: apiRes.statusCode, data: { error: { message: parsed.error?.message || body } } });
+					} else {
+						const text = parsed.choices?.[0]?.message?.content || '';
+						resolve({ error: false, data: { content: [{ text }] } });
+					}
+				} catch (e) {
+					reject(new Error(`Invalid JSON response from OpenAI: ${body.slice(0, 200)}`));
+				}
+			});
+		});
+
+		apiReq.on('error', reject);
+		apiReq.write(postBody);
+		apiReq.end();
+	});
 }
 
-// Proxy endpoint for Claude API
+// Dispatches to whichever backend was requested (falls back to LLM_BACKEND
+// if the client didn't specify one), keeping a uniform response shape.
+function callLLM(systemPrompt, messages, maxTokens = 16384, backend) {
+	const chosen = (backend || LLM_BACKEND).toLowerCase();
+
+	if (chosen === 'ollama') return callOllamaAPI(systemPrompt, messages, maxTokens);
+
+	if (chosen === 'openai') {
+		if (!OPENAI_API_KEY) return Promise.resolve({ error: true, status: 400, data: { error: { message: 'OPENAI_API_KEY is not configured on the server.' } } });
+		return callOpenAIAPI(systemPrompt, messages, maxTokens);
+	}
+
+	if (!CLAUDE_API_KEY) return Promise.resolve({ error: true, status: 400, data: { error: { message: 'CLAUDE_API_KEY is not configured on the server.' } } });
+	return callClaudeAPI(systemPrompt, messages, maxTokens);
+}
+
+// Tells the client which backends are actually usable, to populate the model dropdown.
+app.get('/api/backends', (req, res) => {
+	res.json({ backends: getAvailableBackends(), default: LLM_BACKEND });
+});
+
+// Proxy endpoint for the LLM chat backends
 app.post('/api/chat', async (req, res) => {
 	try {
-		const { messages } = req.body;
+		const { messages, backend } = req.body;
 
 		if (!messages || !Array.isArray(messages)) {
 			return res.status(400).json({ error: 'Messages array is required' });
 		}
 
-		const data = await callLLM(SYSTEM_PROMPT, messages);
+		const data = await callLLM(SYSTEM_PROMPT, messages, 16384, backend);
 
 		if (data.error) {
 			return res.status(data.status).json({
@@ -316,7 +388,7 @@ app.post('/api/chat', async (req, res) => {
 // Error-correction endpoint: takes failing code + error and returns fixed code
 app.post('/api/fix-code', async (req, res) => {
 	try {
-		const { failingCode, errorMessage, errorStack, attempt, priorFixes } = req.body;
+		const { failingCode, errorMessage, errorStack, attempt, priorFixes, backend } = req.body;
 
 		if (!failingCode || !errorMessage) {
 			return res.status(400).json({ error: 'failingCode and errorMessage are required' });
@@ -343,7 +415,7 @@ app.post('/api/fix-code', async (req, res) => {
 		userContent += `\nFix this code. Return ONLY a single \`vr-exec\` code block.`;
 
 		const fixMessages = [{ role: 'user', content: userContent }];
-		const data = await callLLM(FIX_CODE_PROMPT, fixMessages, 8192);
+		const data = await callLLM(FIX_CODE_PROMPT, fixMessages, 8192, backend);
 
 		if (data.error) {
 			return res.status(data.status).json({
