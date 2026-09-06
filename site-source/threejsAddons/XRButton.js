@@ -1,25 +1,32 @@
 /**
- * A utility class for creating a button that allows to initiate
- * immersive AR sessions based on WebXR (passthrough on supported HMDs).
+ * A utility class for creating a button that starts an immersive WebXR
+ * session — AR passthrough where available (Quest standalone), falling
+ * back to plain VR for PCVR headsets connected via Link/Air Link/SteamVR
+ * (Quest 3, Quest 2/Pro, Valve Index, HTC Vive, Windows Mixed Reality,
+ * etc.) that don't expose passthrough to the browser.
  *
  * Usage:
- * document.body.appendChild( ARButton.createButton( renderer ) );
+ * document.body.appendChild( XRButton.createButton( renderer ) );
  */
-class ARButton {
+class XRButton {
 
 	/**
-	 * Constructs a new AR button.
+	 * Constructs a new XR button.
 	 *
 	 * @param {WebGLRenderer|WebGPURenderer} renderer - The renderer.
-	 * @param {XRSessionInit} [sessionInit] - Optional session configuration.
-	 * @return {HTMLElement} The button or an error message if `immersive-ar` isn't supported.
+	 * @param {XRSessionInit} [sessionInit] - Optional session configuration,
+	 *   applied to whichever mode ('immersive-ar' or 'immersive-vr') ends up
+	 *   being used.
+	 * @return {HTMLElement} The button or an error message if neither
+	 *   'immersive-ar' nor 'immersive-vr' is supported.
 	 */
 	static createButton( renderer, sessionInit = {} ) {
 
 		const button = document.createElement( 'button' );
 
-		function showEnterAR() {
+		function showEnterXR( mode ) {
 
+			const isAR = mode === 'immersive-ar';
 			let currentSession = null;
 
 			async function onSessionStarted( session ) {
@@ -34,7 +41,7 @@ class ARButton {
 				}
 
 				await renderer.xr.setSession( session );
-				button.textContent = 'EXIT AR';
+				button.textContent = isAR ? 'EXIT AR' : 'EXIT VR';
 
 				currentSession = session;
 
@@ -44,7 +51,7 @@ class ARButton {
 
 				currentSession.removeEventListener( 'end', onSessionEnded );
 
-				button.textContent = 'ENTER AR';
+				button.textContent = isAR ? 'ENTER AR' : 'ENTER VR';
 
 				currentSession = null;
 
@@ -58,7 +65,7 @@ class ARButton {
 			button.style.left = 'calc(50% - 50px)';
 			button.style.width = '100px';
 
-			button.textContent = 'ENTER AR';
+			button.textContent = isAR ? 'ENTER AR' : 'ENTER VR';
 
 			// Request useful optional features when available.
 			// 'local-floor' must be in requiredFeatures or optionalFeatures
@@ -72,13 +79,16 @@ class ARButton {
 				],
 				optionalFeatures: [
 					'layers',
-					'dom-overlay',
 					'bounded-floor',
+					...( isAR ? [ 'dom-overlay' ] : [] ),
 					...( sessionInit.optionalFeatures || [] )
 				]
 			};
 
-			if ( sessionInit.domOverlay ) {
+			// dom-overlay only makes sense (and is only supported) for AR
+			// passthrough sessions — PCVR/VR-only headsets have no camera
+			// feed for it to overlay onto.
+			if ( isAR && sessionInit.domOverlay ) {
 				sessionOptions.domOverlay = sessionInit.domOverlay;
 			}
 
@@ -98,7 +108,7 @@ class ARButton {
 
 				if ( currentSession === null ) {
 
-					navigator.xr.requestSession( 'immersive-ar', sessionOptions ).then( onSessionStarted );
+					navigator.xr.requestSession( mode, sessionOptions ).then( onSessionStarted );
 
 				} else {
 
@@ -129,17 +139,17 @@ class ARButton {
 
 			disableButton();
 
-			button.textContent = 'AR NOT SUPPORTED';
+			button.textContent = 'VR/AR NOT SUPPORTED';
 
 		}
 
-		function showARNotAllowed( exception ) {
+		function showXRNotAllowed( exception ) {
 
 			disableButton();
 
 			console.warn( 'Exception when trying to call xr.isSessionSupported', exception );
 
-			button.textContent = 'AR NOT ALLOWED';
+			button.textContent = 'VR/AR NOT ALLOWED';
 
 		}
 
@@ -162,16 +172,29 @@ class ARButton {
 
 		if ( 'xr' in navigator ) {
 
-			button.id = 'ARButton';
+			button.id = 'XRButton';
 			button.style.display = 'none';
 
 			stylizeElement( button );
 
-			navigator.xr.isSessionSupported( 'immersive-ar' ).then( function ( supported ) {
+			// Prefer AR passthrough (Quest standalone); fall back to plain VR
+			// for PCVR headsets via Link/Air Link/SteamVR that don't expose
+			// passthrough to the browser (Valve Index, Vive, WMR, and Quest
+			// itself on some OpenXR runtime versions).
+			navigator.xr.isSessionSupported( 'immersive-ar' ).then( function ( arSupported ) {
 
-				supported ? showEnterAR() : showWebXRNotFound();
+				if ( arSupported ) {
+					showEnterXR( 'immersive-ar' );
+					return;
+				}
 
-			} ).catch( showARNotAllowed );
+				navigator.xr.isSessionSupported( 'immersive-vr' ).then( function ( vrSupported ) {
+
+					vrSupported ? showEnterXR( 'immersive-vr' ) : showWebXRNotFound();
+
+				} ).catch( showXRNotAllowed );
+
+			} ).catch( showXRNotAllowed );
 
 			return button;
 
@@ -205,4 +228,4 @@ class ARButton {
 
 }
 
-export { ARButton };
+export { XRButton };

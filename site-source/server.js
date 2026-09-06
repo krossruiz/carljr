@@ -4,8 +4,10 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { networkInterfaces } from 'os';
 import https from 'https';
+import http from 'http';
 import dns from 'dns';
 import fs from 'fs';
+import selfsigned from 'selfsigned';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -13,15 +15,32 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Get API key from environment variable
+// WebXR requires a "secure context" — https, or the special-cased
+// http://localhost. A plain http:// LAN IP (e.g. http://192.168.x.x) does
+// NOT count, so the Quest browser could never start an XR session against
+// it. The server therefore always listens over HTTPS (self-signed cert,
+// generated on first run).
+
+// Which model backend to use: 'claude' (default) or 'ollama'. Set by run.py
+// based on the --ollama / --api-key flags.
+const LLM_BACKEND = (process.env.LLM_BACKEND || 'claude').toLowerCase();
+const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
+
+// Get API key from environment variable (only required for the Claude backend)
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 
-if (!CLAUDE_API_KEY) {
+if (LLM_BACKEND === 'claude' && !CLAUDE_API_KEY) {
 	console.error('\x1b[31mError: CLAUDE_API_KEY environment variable is not set.\x1b[0m');
 	console.error('Set it before running the server:');
 	console.error('  Windows:  set CLAUDE_API_KEY=your-key-here');
 	console.error('  Mac/Linux: export CLAUDE_API_KEY=your-key-here');
+	console.error('Or run with --ollama to use a local Ollama model instead.');
 	process.exit(1);
+}
+
+if (LLM_BACKEND === 'ollama') {
+	console.log(`\x1b[36mUsing local Ollama model "${OLLAMA_MODEL}" at ${OLLAMA_HOST}\x1b[0m`);
 }
 
 // Middleware
@@ -216,6 +235,59 @@ function callClaudeAPI(systemPrompt, messages, maxTokens = 16384) {
 	});
 }
 
+// Shared function: call a local Ollama model and normalize the response into
+// the same { content: [{ text }] } shape the client expects from Claude.
+function callOllamaAPI(systemPrompt, messages, maxTokens = 16384) {
+	return new Promise((resolve, reject) => {
+		const postBody = JSON.stringify({
+			model: OLLAMA_MODEL,
+			stream: false,
+			options: { num_predict: maxTokens },
+			messages: [{ role: 'system', content: systemPrompt }, ...messages]
+		});
+
+		const url = new URL('/api/chat', OLLAMA_HOST);
+		const apiReq = http.request({
+			hostname: url.hostname,
+			port: url.port,
+			path: url.pathname,
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Content-Length': Buffer.byteLength(postBody)
+			}
+		}, (apiRes) => {
+			let body = '';
+			apiRes.on('data', (chunk) => body += chunk);
+			apiRes.on('end', () => {
+				try {
+					const parsed = JSON.parse(body);
+					if (apiRes.statusCode >= 400) {
+						resolve({ error: true, status: apiRes.statusCode, data: { error: { message: parsed.error || body } } });
+					} else {
+						resolve({ error: false, data: { content: [{ text: parsed.message?.content || '' }] } });
+					}
+				} catch (e) {
+					reject(new Error(`Invalid JSON response from Ollama: ${body.slice(0, 200)}`));
+				}
+			});
+		});
+
+		apiReq.on('error', (err) => {
+			reject(new Error(`Could not reach Ollama at ${OLLAMA_HOST}: ${err.message}`));
+		});
+		apiReq.write(postBody);
+		apiReq.end();
+	});
+}
+
+// Dispatches to whichever backend is configured, keeping a uniform response shape.
+function callLLM(systemPrompt, messages, maxTokens = 16384) {
+	return LLM_BACKEND === 'ollama'
+		? callOllamaAPI(systemPrompt, messages, maxTokens)
+		: callClaudeAPI(systemPrompt, messages, maxTokens);
+}
+
 // Proxy endpoint for Claude API
 app.post('/api/chat', async (req, res) => {
 	try {
@@ -225,7 +297,7 @@ app.post('/api/chat', async (req, res) => {
 			return res.status(400).json({ error: 'Messages array is required' });
 		}
 
-		const data = await callClaudeAPI(SYSTEM_PROMPT, messages);
+		const data = await callLLM(SYSTEM_PROMPT, messages);
 
 		if (data.error) {
 			return res.status(data.status).json({
@@ -271,7 +343,7 @@ app.post('/api/fix-code', async (req, res) => {
 		userContent += `\nFix this code. Return ONLY a single \`vr-exec\` code block.`;
 
 		const fixMessages = [{ role: 'user', content: userContent }];
-		const data = await callClaudeAPI(FIX_CODE_PROMPT, fixMessages, 8192);
+		const data = await callLLM(FIX_CODE_PROMPT, fixMessages, 8192);
 
 		if (data.error) {
 			return res.status(data.status).json({
@@ -287,8 +359,13 @@ app.post('/api/fix-code', async (req, res) => {
 	}
 });
 
-// Scene save/load endpoints
-const SCENE_FILE = join(__dirname, 'saved-scene.vrscene');
+// Scene save/load endpoints. On Vercel the deployment filesystem is
+// read-only except /tmp, and /tmp isn't shared or persistent across
+// invocations - save/load will only round-trip within the same warm
+// function instance there, not indefinitely like the local server.
+const SCENE_FILE = process.env.VERCEL
+	? join('/tmp', 'saved-scene.vrscene')
+	: join(__dirname, 'saved-scene.vrscene');
 
 app.post('/api/save-scene', (req, res) => {
 	try {
@@ -330,12 +407,79 @@ function getLocalIP() {
 	return 'localhost';
 }
 
-app.listen(PORT, '0.0.0.0', () => {
+// Generate (and cache to disk) a self-signed cert covering localhost + the
+// current LAN IP, so a WebXR-capable HTTPS origin is available for the
+// Quest browser without needing a real certificate. Re-generated whenever
+// the cached cert doesn't cover the machine's current LAN IP (e.g. it
+// changed networks) or is missing.
+async function getOrCreateCert(localIP) {
+	const certDir = join(__dirname, 'certs');
+	const keyPath = join(certDir, 'key.pem');
+	const certPath = join(certDir, 'cert.pem');
+	const metaPath = join(certDir, 'meta.json');
+
+	if (fs.existsSync(keyPath) && fs.existsSync(certPath) && fs.existsSync(metaPath)) {
+		try {
+			const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+			if (meta.localIP === localIP) {
+				return {
+					key: fs.readFileSync(keyPath, 'utf8'),
+					cert: fs.readFileSync(certPath, 'utf8'),
+				};
+			}
+		} catch {
+			// fall through to regenerate
+		}
+	}
+
+	console.log('\x1b[36mGenerating self-signed HTTPS certificate...\x1b[0m');
+	const attrs = [{ name: 'commonName', value: localIP }];
+	const notAfterDate = new Date();
+	notAfterDate.setFullYear(notAfterDate.getFullYear() + 10);
+	const pems = await selfsigned.generate(attrs, {
+		notAfterDate,
+		algorithm: 'sha256',
+		keySize: 2048,
+		extensions: [
+			{
+				name: 'subjectAltName',
+				altNames: [
+					{ type: 2, value: 'localhost' },   // DNS
+					{ type: 7, ip: '127.0.0.1' },       // IP
+					{ type: 7, ip: localIP },           // IP
+				],
+			},
+		],
+	});
+
+	fs.mkdirSync(certDir, { recursive: true });
+	fs.writeFileSync(keyPath, pems.private);
+	fs.writeFileSync(certPath, pems.cert);
+	fs.writeFileSync(metaPath, JSON.stringify({ localIP }));
+
+	return { key: pems.private, cert: pems.cert };
+}
+
+// On Vercel, the platform already terminates TLS with a real (non-self-signed)
+// certificate and invokes this file as a request handler directly - there's no
+// self-signed cert to generate and nothing to .listen() on. Only do the local
+// HTTPS-server dance when actually running via `node server.js` / run.py.
+if (!process.env.VERCEL) {
 	const localIP = getLocalIP();
 
-	console.log('\n\x1b[32m=== Claude VR Chat Server ===\x1b[0m\n');
-	console.log(`Local:   http://localhost:${PORT}`);
-	console.log(`Network: http://${localIP}:${PORT}`);
-	console.log('\n\x1b[36mOpen the Network URL on your Quest 3 browser.\x1b[0m');
-	console.log('\x1b[33mNote: Both devices must be on the same WiFi network.\x1b[0m\n');
-});
+	const { key, cert } = await getOrCreateCert(localIP);
+	const server = https.createServer({ key, cert }, app);
+
+	server.listen(PORT, '0.0.0.0', () => {
+		console.log('\n\x1b[32m=== Claude VR Chat Server ===\x1b[0m\n');
+		console.log(`Local:   https://localhost:${PORT}`);
+		console.log(`Network: https://${localIP}:${PORT}`);
+		console.log('\n\x1b[36mOpen the Network URL on your Quest 3 browser.\x1b[0m');
+		console.log('\x1b[33mNote: Both devices must be on the same WiFi network.\x1b[0m');
+		console.log('\x1b[33mSelf-signed certificate: the browser will warn on first');
+		console.log('visit — accept/proceed once to continue ("Advanced" > "Proceed").\x1b[0m');
+		console.log();
+	});
+}
+
+export default app;

@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "site-source/server.js",
+      "use": "@vercel/node",
+      "config": { "includeFiles": ["site-source/index.html", "site-source/main.js", "site-source/threejsAddons/**"] }
+    }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "site-source/server.js" }
+  ]
+}

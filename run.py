@@ -3,23 +3,48 @@
 VRClaudeInterface launcher — starts the Node web server (server.js), streams
 its output, and cleanly stops it on Ctrl+C.
 
-Usage:
-    python run.py                          # start; prompts for API key if needed
-    python run.py --api-key sk-ant-...     # pass API key directly
-    python run.py --api-key-file key.txt   # read API key from a file
+Choose one model backend via flags:
+
+    python run.py --ollama                       # interactive picker over your
+                                                  # locally-downloaded Ollama models
+    python run.py --ollama --ollama-model llama3 # skip the picker, use this model
+    python run.py --api-key sk-ant-...           # use Claude; save key permanently
+    python run.py --api-key-file key.txt         # use Claude; read key from a file
+    python run.py                                # use Claude; reuse a previously
+                                                  # saved CLAUDE_API_KEY env var
     python run.py start                    # same as bare 'python run.py'
     python run.py stop                     # kill server from a previous run
     python run.py status                   # show whether the recorded PID is alive
     python run.py restart                  # stop then start
 
-Claude API key resolution order (first one wins):
-    1. --api-key CLI argument
-    2. --api-key-file CLI argument (path; whitespace stripped)
-    3. CLAUDE_API_KEY environment variable
-    4. Interactive hidden prompt (getpass)
+Backend selection:
+    --ollama            Use a local Ollama model. No API key needed; requires
+                         Ollama running locally (default http://localhost:11434).
+                         If --ollama-model isn't given, shows a numbered picker
+                         of the models you've already pulled locally.
+    --ollama-model NAME Skip the picker and request this model from Ollama.
+    --api-key KEY       Use the Claude API with this key, and PERMANENTLY save
+                         it as the CLAUDE_API_KEY environment variable on this
+                         system (via `setx` on Windows, or your shell profile
+                         on macOS/Linux) so future runs don't need it again.
+    --api-key-file FILE Use the Claude API with a key read from a file (plain
+                         text or KEY=VAL). Used for this run only — not saved.
+    --port PORT         Local port for the Node web server (default: 3000,
+                         or $PORT if set).
+
+The server always listens over HTTPS with an auto-generated, locally-cached
+self-signed certificate (WebXR requires a secure context, and plain HTTP
+only counts as one for 'localhost' — not for the LAN IP the Quest uses).
+Your browser will show a one-time untrusted-certificate warning; click
+through it ("Advanced" > "Proceed") on each device that connects.
+
+Claude API key resolution order, when --ollama is not given (first one wins):
+    1. --api-key CLI argument (also persisted to the system environment)
+    2. --api-key-file CLI argument (path; whitespace stripped; not persisted)
+    3. CLAUDE_API_KEY environment variable (e.g. from a prior --api-key run)
 
 The resolved key is passed to the Node child via its env only — it is never
-written to the PID file, logged, or exported into the parent shell.
+written to the PID file or logged.
 
 Env vars honored:
     CLAUDE_API_KEY         — fallback source for the key (see above)
@@ -27,7 +52,6 @@ Env vars honored:
 """
 
 import argparse
-import getpass
 import json
 import os
 import shutil
@@ -36,6 +60,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -123,15 +149,47 @@ def kill_pid(pid):
         return False
 
 
+def persist_env_var(name, value):
+    """Permanently set an environment variable on this system.
+
+    Windows: `setx` writes it to the user's registry-backed environment
+    (visible in new shells; does not affect the current process's own env).
+    macOS/Linux: appended as an `export` line to the user's shell profile.
+    Returns True on success, False otherwise. Never raises.
+    """
+    try:
+        if IS_WINDOWS:
+            result = subprocess.run(
+                ["setx", name, value],
+                capture_output=True, text=True
+            )
+            return result.returncode == 0
+        else:
+            shell = os.environ.get("SHELL", "")
+            profile = ".zshrc" if "zsh" in shell else ".bashrc"
+            profile_path = Path.home() / profile
+            line = f'\nexport {name}="{value}"\n'
+            with open(profile_path, "a", encoding="utf-8") as f:
+                f.write(line)
+            return True
+    except Exception as e:
+        cprint(ERR_COL, f"Warning: failed to permanently save {name}: {e}")
+        return False
+
+
 def resolve_api_key(arg_key, arg_key_file):
     """Resolve the Claude API key from the available sources.
 
-    Priority: --api-key > --api-key-file > $CLAUDE_API_KEY > interactive prompt.
-    Returns the key as a string, or None if the user aborts the prompt.
-    The key is NEVER written to disk, logged, or echoed.
+    Priority: --api-key > --api-key-file > $CLAUDE_API_KEY.
+    Returns the key as a string, or None if no source provided one.
+    The key is NEVER written to the PID file or logged.
     """
     if arg_key:
-        return arg_key.strip()
+        key = arg_key.strip()
+        cprint(OK_COL, "Saving CLAUDE_API_KEY permanently to your system environment...")
+        if persist_env_var("CLAUDE_API_KEY", key):
+            cprint(OK_COL, "Saved. Future runs won't need --api-key (new shells only).")
+        return key
 
     if arg_key_file:
         path = Path(arg_key_file).expanduser()
@@ -160,19 +218,57 @@ def resolve_api_key(arg_key, arg_key_file):
     if env_key:
         return env_key.strip()
 
-    # Interactive fallback. getpass hides input and works on Windows + POSIX.
-    if not sys.stdin.isatty():
-        cprint(ERR_COL,
-               "No API key supplied and stdin is not a TTY — pass --api-key, "
-               "--api-key-file, or set CLAUDE_API_KEY.")
-        return None
-    print(f"{DIM}Enter your Claude API key (input hidden). Leave blank to abort.{RESET}")
+    return None
+
+
+def list_ollama_models(host="http://localhost:11434"):
+    """Query a local Ollama daemon for the models it has downloaded.
+
+    Returns a list of model name strings, or None if Ollama couldn't be
+    reached (not running, wrong host, etc).
+    """
     try:
-        entered = getpass.getpass("CLAUDE_API_KEY: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return [m["name"] for m in data.get("models", [])]
+    except (urllib.error.URLError, OSError, ValueError, KeyError):
         return None
-    return entered or None
+
+
+def pick_ollama_model():
+    """Interactive picker over locally-downloaded Ollama models.
+
+    Falls back to "llama3" (with a warning) if Ollama isn't reachable or has
+    no models pulled, since that's not something an interactive prompt can
+    fix on the spot.
+    """
+    models = list_ollama_models()
+
+    if models is None:
+        cprint(ERR_COL,
+               "Couldn't reach Ollama at http://localhost:11434 — is it running? "
+               "Falling back to default model 'llama3'.")
+        return "llama3"
+
+    if not models:
+        cprint(ERR_COL,
+               "Ollama is running but has no models downloaded. Run "
+               "'ollama pull <model>' first. Falling back to 'llama3'.")
+        return "llama3"
+
+    print()
+    cprint(OK_COL, "Local Ollama models:")
+    for i, name in enumerate(models, start=1):
+        print(f"  {i}) {name}")
+    print()
+
+    while True:
+        choice = input(f"Pick a model [1-{len(models)}] (default 1): ").strip()
+        if not choice:
+            return models[0]
+        if choice.isdigit() and 1 <= int(choice) <= len(models):
+            return models[int(choice) - 1]
+        cprint(ERR_COL, f"Enter a number between 1 and {len(models)}.")
 
 
 def spawn(cmd, cwd, env_extra=None):
@@ -196,7 +292,8 @@ def spawn(cmd, cwd, env_extra=None):
     return subprocess.Popen(cmd, **kwargs)
 
 
-def cmd_start(api_key=None, api_key_file=None):
+def cmd_start(api_key=None, api_key_file=None, use_ollama=False, ollama_model=None,
+              port=None):
     if not SITE_DIR.is_dir():
         cprint(ERR_COL, f"site-source directory not found at {SITE_DIR}")
         return 1
@@ -208,10 +305,23 @@ def cmd_start(api_key=None, api_key_file=None):
         cprint(ERR_COL, "'node' not found on PATH — install Node.js.")
         return 1
 
-    resolved_key = resolve_api_key(api_key, api_key_file)
-    if not resolved_key:
-        cprint(ERR_COL, "No Claude API key supplied — aborting.")
-        return 1
+    if use_ollama:
+        chosen_model = ollama_model or pick_ollama_model()
+        backend_env = {
+            "LLM_BACKEND": "ollama",
+            "OLLAMA_MODEL": chosen_model,
+        }
+    else:
+        resolved_key = resolve_api_key(api_key, api_key_file)
+        if not resolved_key:
+            cprint(ERR_COL,
+                   "No Claude API key supplied — pass --api-key, --api-key-file, "
+                   "or use --ollama for a local model.")
+            return 1
+        backend_env = {"LLM_BACKEND": "claude", "CLAUDE_API_KEY": resolved_key}
+
+    if port is not None:
+        backend_env["PORT"] = str(port)
 
     existing = read_pids()
     if existing and is_alive(existing.get("node")):
@@ -220,13 +330,12 @@ def cmd_start(api_key=None, api_key_file=None):
                "Run 'python run.py stop' first.")
         return 1
 
-    cprint(OK_COL, "Starting Node web server...")
-    # Pass the API key only to the Node child, not to anything we log. The
-    # key never lives in the parent's exported env beyond what was already there.
+    cprint(OK_COL, f"Starting Node web server ({'ollama' if use_ollama else 'claude'} backend)...")
+    # Pass secrets/backend selection only to the Node child, not to anything we log.
     node_proc = spawn(
         ["node", "server.js"],
         cwd=SITE_DIR,
-        env_extra={"CLAUDE_API_KEY": resolved_key},
+        env_extra=backend_env,
     )
     threading.Thread(
         target=stream_output, args=(node_proc, "node", NODE_COL), daemon=True
@@ -342,17 +451,35 @@ def main():
         help="What to do (default: start)",
     )
     parser.add_argument(
+        "--ollama", action="store_true",
+        help="Use a local Ollama model instead of the Claude API.",
+    )
+    parser.add_argument(
+        "--ollama-model", default=None,
+        help="Ollama model name to use with --ollama. If omitted, an "
+             "interactive picker lists your locally-downloaded models.",
+    )
+    parser.add_argument(
         "--api-key",
-        help="Claude API key. Takes priority over --api-key-file and $CLAUDE_API_KEY.",
+        help="Claude API key. Saved permanently as the CLAUDE_API_KEY system "
+             "environment variable. Takes priority over --api-key-file and "
+             "$CLAUDE_API_KEY. Ignored if --ollama is set.",
     )
     parser.add_argument(
         "--api-key-file",
-        help="Path to a file containing the Claude API key (plain or KEY=VAL).",
+        help="Path to a file containing the Claude API key (plain or KEY=VAL). "
+             "Used for this run only — not saved. Ignored if --ollama is set.",
+    )
+    parser.add_argument(
+        "--port", type=int, default=None,
+        help="Local port for the Node web server (default: 3000, or $PORT).",
     )
     args = parser.parse_args()
 
     if args.action == "start":
-        return cmd_start(api_key=args.api_key, api_key_file=args.api_key_file)
+        return cmd_start(api_key=args.api_key, api_key_file=args.api_key_file,
+                          use_ollama=args.ollama, ollama_model=args.ollama_model,
+                          port=args.port)
     if args.action == "stop":
         return cmd_stop()
     if args.action == "status":
@@ -360,7 +487,9 @@ def main():
     if args.action == "restart":
         cmd_stop()
         time.sleep(0.5)
-        return cmd_start(api_key=args.api_key, api_key_file=args.api_key_file)
+        return cmd_start(api_key=args.api_key, api_key_file=args.api_key_file,
+                          use_ollama=args.ollama, ollama_model=args.ollama_model,
+                          port=args.port)
 
 
 if __name__ == "__main__":

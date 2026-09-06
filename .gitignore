@@ -1,1 +1,7 @@
 node_modules/
+site-source/certs/
+__pycache__/
+*.pyc
+.vrclaude.pids
+.CLAUDE.md.swp
+.vercel

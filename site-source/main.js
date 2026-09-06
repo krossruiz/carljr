@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ARButton } from './threejsAddons/ARButton.js';
+import { XRButton } from './threejsAddons/XRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // ============================================================================
@@ -186,10 +186,12 @@ scene.add(player);
 window.hud = hud;
 
 // ============================================================================
-// AR Button Setup with DOM Overlay
+// XR Button Setup — AR passthrough on Quest standalone, plain VR fallback
+// for PCVR headsets over Link/Air Link/SteamVR (Quest 3 via Link, Index,
+// Vive, WMR, ...) that don't expose passthrough to the browser.
 // ============================================================================
 document.body.appendChild(
-	ARButton.createButton(renderer, {
+	XRButton.createButton(renderer, {
 		optionalFeatures: ['hit-test', 'dom-overlay'],
 		domOverlay: { root: overlayRoot }
 	})
@@ -2831,6 +2833,18 @@ renderer.xr.addEventListener('sessionstart', () => {
 	// is around y=1.6, so anchor panels just below eye level for comfort.
 	positionAllPanels(1.4);
 	setImmersiveUiMode(true);
+
+	// PCVR headsets (Quest via Link/Air Link, Index, Vive, WMR, ...) report
+	// an 'opaque' blend mode — there's no camera passthrough to show, so
+	// switch on the VR skybox instead of leaving a black void. Passthrough
+	// AR sessions report 'additive' or 'alpha-blend' and keep the transparent
+	// background as before.
+	const session = renderer.xr.getSession();
+	if (session && session.environmentBlendMode === 'opaque') {
+		isVRMode = true;
+		applyEnvironmentMode();
+		renderSidePanel();
+	}
 });
 
 renderer.xr.addEventListener('sessionend', () => {
