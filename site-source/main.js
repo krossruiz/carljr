@@ -81,6 +81,7 @@ const dchatColorPicker = document.getElementById('dchat-color-picker');
 const dchatColorPreview = document.getElementById('dchat-color-preview');
 const dchatBrightness = document.getElementById('dchat-brightness');
 const dchatResetCameraBtn = document.getElementById('dchat-reset-camera');
+const dchatNavType = document.getElementById('dchat-nav-type');
 const dchatExportBtn = document.getElementById('dchat-export-btn');
 const dchatImportBtn = document.getElementById('dchat-import-btn');
 const dchatLoadServerBtn = document.getElementById('dchat-load-server-btn');
@@ -200,7 +201,7 @@ let uiToggleCanvas = null;
 let uiToggleContext = null;
 let uiToggleTexture = null;
 let player = null;            // rig holding the camera + controllers (locomotion)
-let locomotionMode = 'off';   // 'off' (thumbsticks scroll) | 'planar' | 'free'
+let locomotionMode = 'free';  // 'off' (thumbsticks scroll) | 'planar' (First Person) | 'free' (WASD) - see dchat-nav-type
 let _locoPrevTime = 0;        // previous frame timestamp for dt
 
 // Speech-to-text (in-browser Whisper via transformers.js — cross-platform)
@@ -2587,16 +2588,71 @@ function cycleLocomotionMode() {
 	locomotionMode = locomotionMode === 'off' ? 'planar'
 		: locomotionMode === 'planar' ? 'free' : 'off';
 	const label = locomotionMode === 'off' ? 'Locomotion off — thumbsticks scroll'
-		: locomotionMode === 'planar' ? 'Locomotion: planar (left move · right turn)'
-		: 'Locomotion: free-roam (left fly · right turn)';
+		: locomotionMode === 'planar' ? 'Locomotion: First Person (left move/turn · right stick turn/height)'
+		: 'Locomotion: WASD/free-fly (left move/turn · right stick turn/height)';
 	updateStatus(label, locomotionMode === 'off' ? '' : 'connected');
+	// Keep the desktop dropdown in sync (it has no "off" option, so leave it
+	// showing whichever nav type was last active if the VR grip cycled to off).
+	if (dchatNavType && locomotionMode !== 'off') dchatNavType.value = locomotionMode;
+}
+
+dchatNavType?.addEventListener('change', () => {
+	locomotionMode = dchatNavType.value;
+});
+
+const _locoUpLocal = new THREE.Vector3();
+
+// Shared movement math for both VR thumbsticks and desktop keyboard. mx/my
+// are strafe/forward (-1..1, forward = negative my to match "push stick up
+// = forward"), rx is yaw turn, ry is vertical (-1..1, positive = up).
+// refCamera supplies the facing direction (xrCam in VR, the plain desktop
+// `camera` otherwise).
+//
+// 'planar' (First Person nav type): forward/strafe are flattened onto the
+// horizontal plane (no drift from looking up/down), and vertical (Q/E)
+// always moves along the world/global up axis regardless of where you're
+// looking - height is controlled by Q/E alone.
+// 'free' (WASD nav type): forward/strafe follow the exact look direction
+// (can fly up/down by looking up/down), and vertical (Q/E) moves along the
+// camera's own local up vector, which tilts with your view.
+function applyLocomotionInput(dt, refCamera, mx, my, rx, ry) {
+	if (!player || locomotionMode === 'off' || dt <= 0) return;
+
+	if (mx !== 0 || my !== 0 || ry !== 0) {
+		refCamera.getWorldQuaternion(_locoQuat);
+		_locoForward.set(0, 0, -1).applyQuaternion(_locoQuat);
+		_locoRight.set(1, 0, 0).applyQuaternion(_locoQuat);
+		let upVec;
+		if (locomotionMode === 'planar') {
+			_locoForward.y = 0; _locoRight.y = 0;
+			_locoForward.normalize(); _locoRight.normalize();
+			upVec = _LOCO_UP; // global up - height is set by Q/E, unaffected by view direction
+		} else {
+			upVec = _locoUpLocal.set(0, 1, 0).applyQuaternion(_locoQuat); // local up - tilts with your view
+		}
+		_locoMove.set(0, 0, 0)
+			.addScaledVector(_locoForward, -my) // push up = forward
+			.addScaledVector(_locoRight, mx)    // push right = strafe right
+			.addScaledVector(upVec, ry)          // Q/push right-stick up = ascend
+			.multiplyScalar(MOVE_SPEED * dt);
+		player.position.add(_locoMove);
+	}
+
+	// Turn (right stick x / no keyboard equivalent), yaw around the user's
+	// head so the view doesn't swing.
+	if (rx !== 0) {
+		const angle = -rx * TURN_SPEED * dt;
+		refCamera.getWorldPosition(_locoHead);
+		player.position.sub(_locoHead).applyAxisAngle(_LOCO_UP, angle).add(_locoHead);
+		player.rotateY(angle);
+	}
 }
 
 function updateLocomotion(dt, session) {
 	if (!player || locomotionMode === 'off' || dt <= 0) return;
 
 	const xrCam = renderer.xr.getCamera();
-	let mx = 0, my = 0, rx = 0; // left x/y (move), right x (turn)
+	let mx = 0, my = 0, rx = 0, ry = 0; // left x/y (move), right x (turn), right y (vertical)
 	for (const source of session.inputSources) {
 		const gp = source.gamepad;
 		if (!gp || !gp.axes) continue;
@@ -2611,32 +2667,44 @@ function updateLocomotion(dt, session) {
 			if (Math.abs(ax) > THUMBSTICK_DEADZONE) my = ax;
 		} else if (source.handedness === 'right') {
 			if (Math.abs(ax) > THUMBSTICK_DEADZONE) rx = ax;
+			// Right thumbstick vertical: push up to ascend (Q), pull down to
+			// descend (E) - the flying-controls equivalent of Q/E.
+			if (Math.abs(ay) > THUMBSTICK_DEADZONE) ry = -ay;
 		}
 	}
 
-	// Movement (left stick), relative to head facing.
-	if (mx !== 0 || my !== 0) {
-		xrCam.getWorldQuaternion(_locoQuat);
-		_locoForward.set(0, 0, -1).applyQuaternion(_locoQuat);
-		_locoRight.set(1, 0, 0).applyQuaternion(_locoQuat);
-		if (locomotionMode === 'planar') {
-			_locoForward.y = 0; _locoRight.y = 0;
-			_locoForward.normalize(); _locoRight.normalize();
-		}
-		_locoMove.set(0, 0, 0)
-			.addScaledVector(_locoForward, -my) // push up = forward
-			.addScaledVector(_locoRight, mx)    // push right = strafe right
-			.multiplyScalar(MOVE_SPEED * dt);
-		player.position.add(_locoMove);
-	}
+	applyLocomotionInput(dt, xrCam, mx, my, rx, ry);
+}
 
-	// Turn (right stick x), yaw around the user's head so the view doesn't swing.
-	if (rx !== 0) {
-		const angle = -rx * TURN_SPEED * dt;
-		xrCam.getWorldPosition(_locoHead);
-		player.position.sub(_locoHead).applyAxisAngle(_LOCO_UP, angle).add(_locoHead);
-		player.rotateY(angle);
-	}
+// Desktop keyboard equivalent (WASD move/strafe, Q/E vertical). Only active
+// outside an XR session (VR uses the thumbsticks above) and never while
+// typing into a text field.
+const _keysDown = new Set();
+const LOCOMOTION_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE']);
+
+document.addEventListener('keydown', (e) => {
+	if (!LOCOMOTION_KEYS.has(e.code)) return;
+	const activeTag = document.activeElement && document.activeElement.tagName;
+	if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
+	if (renderer.xr.isPresenting) return;
+	_keysDown.add(e.code);
+});
+document.addEventListener('keyup', (e) => {
+	_keysDown.delete(e.code);
+});
+window.addEventListener('blur', () => _keysDown.clear());
+
+function updateKeyboardLocomotion(dt) {
+	if (renderer.xr.isPresenting || _keysDown.size === 0) return;
+	let mx = 0, my = 0, ry = 0;
+	if (_keysDown.has('KeyW')) my -= 1;
+	if (_keysDown.has('KeyS')) my += 1;
+	if (_keysDown.has('KeyD')) mx += 1;
+	if (_keysDown.has('KeyA')) mx -= 1;
+	if (_keysDown.has('KeyQ')) ry += 1;
+	if (_keysDown.has('KeyE')) ry -= 1;
+	if (mx === 0 && my === 0 && ry === 0) return;
+	applyLocomotionInput(dt, camera, mx, my, 0, ry);
 }
 
 // ============================================================================
@@ -3245,6 +3313,8 @@ renderer.setAnimationLoop((time) => {
 	} else {
 		// Hide reticles outside XR
 		for (const r of reticles) if (r) r.visible = false;
+		// Desktop keyboard locomotion (WASD move/strafe, Q/E vertical).
+		updateKeyboardLocomotion(dt);
 	}
 
 	// Run user-injected animations from vr-exec code

@@ -140,6 +140,13 @@
 		}
 		#desktop-ollama-model-select option { background: #1f2030; color: #fff; }
 
+		#dchat-nav-type {
+			background: rgba(255, 255, 255, 0.08); color: #fff;
+			border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px;
+			font-size: 13px; padding: 6px 8px;
+		}
+		#dchat-nav-type option { background: #1f2030; color: #fff; }
+
 		#desktop-chat-title {
 			font-size: 14px;
 			font-weight: 700;
@@ -839,6 +846,17 @@
 						<input type="range" id="dchat-brightness" min="2" max="95" value="50" />
 					</div>
 					<div class="dchat-disabled-note" style="margin-top:8px">Switch to VR to customize the background.</div>
+				</div>
+				<div>
+					<div class="dchat-section-label" style="margin-bottom:8px">Navigation</div>
+					<select id="dchat-nav-type" style="width:100%; margin-bottom:6px;">
+						<option value="free">WASD (fly toward where you're looking)</option>
+						<option value="planar">First Person (ground-locked, Q/E sets height)</option>
+					</select>
+					<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-bottom:8px">
+						W/A/S/D move &middot; Q/E up/down &middot; on Quest: left stick moves,
+						right stick turns/up-down &middot; right grip cycles modes (incl. off).
+					</div>
 				</div>
 				<div>
 					<div class="dchat-section-label" style="margin-bottom:8px">Camera</div>
