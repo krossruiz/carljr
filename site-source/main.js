@@ -101,14 +101,40 @@ let cachedPrompts = null; // { systemPrompt, fixCodePrompt } - fetched once from
 // it "local"), regardless of whether this page itself was loaded from
 // Vercel or from `python run.py`. So instead of proxying through this app's
 // own server (which, when deployed, has no network path to the visitor's
-// laptop at all), the browser talks to the user's Ollama directly. Ollama
-// allows localhost origins out of the box; reaching it from a non-localhost
-// origin (e.g. the hosted vrclaudeinterface.vercel.app) requires the user
-// to run Ollama with OLLAMA_ORIGINS set to include that origin (or "*").
+// laptop at all), the browser talks to the user's Ollama directly.
+//
+// This only actually works when THIS PAGE is also served from localhost
+// (i.e. via `python run.py`, not the hosted Vercel site). Reaching a
+// loopback address (127.0.0.1/localhost) from a page loaded off a public
+// origin is blocked by the browser's Private Network Access policy - unlike
+// ordinary CORS, this can't be opted into via Ollama's OLLAMA_ORIGINS
+// setting (Ollama doesn't send the special Access-Control-Allow-Private-
+// Network response header the preflight requires), so the request just
+// hangs/never resolves rather than failing fast. Confirmed empirically:
+// identical fetch from https://localhost:PORT succeeds instantly, the same
+// fetch from the hosted Vercel origin never settles at all.
 const OLLAMA_BASE_URL = 'http://localhost:11434';
+const IS_LOCAL_PAGE = ['localhost', '127.0.0.1'].includes(location.hostname);
+const OLLAMA_UNAVAILABLE_HOSTED_MSG =
+	'Ollama only works when this app is run locally, not from the hosted site: browsers block a ' +
+	'public page like this one from reaching a service on your own machine (Private Network Access) - ' +
+	'this is a browser security rule, not something Ollama\'s settings can override. Run `python run.py` ' +
+	'locally to use Ollama models.';
+
+function fetchWithTimeout(url, options, ms) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), ms);
+	return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
 
 async function listOllamaModels() {
-	const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`);
+	if (!IS_LOCAL_PAGE) throw new Error(OLLAMA_UNAVAILABLE_HOSTED_MSG);
+	let res;
+	try {
+		res = await fetchWithTimeout(`${OLLAMA_BASE_URL}/api/tags`, {}, 4000);
+	} catch (e) {
+		throw new Error(`Could not reach Ollama at ${OLLAMA_BASE_URL}. Make sure Ollama is running.`);
+	}
 	if (!res.ok) throw new Error(`Ollama responded with ${res.status}`);
 	const data = await res.json();
 	return (data.models || []).map(m => m.name);
@@ -118,10 +144,11 @@ async function listOllamaModels() {
 // the same { content: [{ text }] } shape the rest of the chat code expects
 // from the server-proxied backends.
 async function callOllamaDirect(systemPrompt, chatMessages, model, maxTokens = 16384) {
+	if (!IS_LOCAL_PAGE) throw new Error(OLLAMA_UNAVAILABLE_HOSTED_MSG);
 	if (!model) throw new Error('No Ollama model selected.');
 	let res;
 	try {
-		res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+		res = await fetchWithTimeout(`${OLLAMA_BASE_URL}/api/chat`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -130,14 +157,9 @@ async function callOllamaDirect(systemPrompt, chatMessages, model, maxTokens = 1
 				options: { num_predict: maxTokens },
 				messages: [{ role: 'system', content: systemPrompt }, ...chatMessages]
 			})
-		});
+		}, 120000); // generous - local inference can be slow, especially cold-loading a model
 	} catch (networkErr) {
-		throw new Error(
-			`Could not reach Ollama at ${OLLAMA_BASE_URL} from the browser. Make sure Ollama is running` +
-			(location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'
-				? `, and since this page isn't on localhost, start Ollama with OLLAMA_ORIGINS including "${location.origin}" (or "*") so it accepts requests from this page.`
-				: '.')
-		);
+		throw new Error(`Could not reach Ollama at ${OLLAMA_BASE_URL}. Make sure Ollama is running.`);
 	}
 	const text = await res.text();
 	let data;
@@ -2709,17 +2731,27 @@ async function initModelSelect() {
 		const res = await fetch('/api/backends');
 		const { backends, default: defaultBackend } = await res.json();
 
+		// "local: true" backends (currently just Ollama) additionally require
+		// THIS PAGE to be on localhost - see the Private Network Access note
+		// on OLLAMA_UNAVAILABLE_HOSTED_MSG above. That's a client-side fact
+		// the server can't know, so it's applied on top of `available` here.
 		desktopModelSelect.innerHTML = '';
 		for (const [id, info] of Object.entries(backends)) {
+			const usable = info.available && (!info.local || IS_LOCAL_PAGE);
 			const opt = document.createElement('option');
 			opt.value = id;
-			opt.textContent = info.available ? info.label : `${info.label} — no API key set`;
-			opt.disabled = !info.available;
+			opt.textContent = usable
+				? info.label
+				: !info.available
+					? `${info.label} — no API key set`
+					: `${info.label} — only when run via python run.py`;
+			opt.disabled = !usable;
 			desktopModelSelect.appendChild(opt);
 		}
 
-		const firstAvailable = Object.entries(backends).find(([, info]) => info.available)?.[0];
-		selectedBackend = backends[defaultBackend]?.available ? defaultBackend : (firstAvailable || defaultBackend);
+		const firstUsable = Object.entries(backends).find(([, info]) => info.available && (!info.local || IS_LOCAL_PAGE))?.[0];
+		const defaultUsable = backends[defaultBackend]?.available && (!backends[defaultBackend]?.local || IS_LOCAL_PAGE);
+		selectedBackend = defaultUsable ? defaultBackend : (firstUsable || defaultBackend);
 		desktopModelSelect.value = selectedBackend;
 		updateOllamaRowVisibility();
 		if (selectedBackend === 'ollama') refreshOllamaModelList();
