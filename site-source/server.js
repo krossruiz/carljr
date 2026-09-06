@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { networkInterfaces } from 'os';
 import https from 'https';
-import http from 'http';
 import dns from 'dns';
 import fs from 'fs';
 import selfsigned from 'selfsigned';
@@ -25,8 +24,6 @@ const PORT = process.env.PORT || 3000;
 // The client can override this per-request (see the model dropdown in the
 // chat UI) - this is just the fallback when a request doesn't specify one.
 const LLM_BACKEND = (process.env.LLM_BACKEND || 'claude').toLowerCase();
-const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-6-astra';
 
 // API keys - each backend is only usable if its key is configured. This
@@ -37,13 +34,21 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-6-astra';
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Backend id -> { label, available } - sent to the client so it can build
-// the model dropdown from whatever's actually configured.
+// Ollama is NOT proxied through this server. The server has no network path
+// to a user's own machine when this app is deployed on Vercel - "localhost"
+// from the server's perspective is the Vercel container, not the visitor's
+// laptop. Instead the *browser* calls the user's local Ollama directly
+// (http://localhost:11434), which actually is on the same machine as the
+// browser regardless of whether this page is loaded from Vercel or run
+// locally. See listOllamaModels()/callOllamaDirect() in main.js. Ollama
+// allows localhost origins by default; reaching it from the hosted
+// vrclaudeinterface.vercel.app origin requires the user to start Ollama
+// with OLLAMA_ORIGINS including that origin (or "*").
 function getAvailableBackends() {
 	return {
 		claude: { label: 'Claude (Sonnet 5)', available: !!CLAUDE_API_KEY },
 		openai: { label: `OpenAI (${OPENAI_MODEL})`, available: !!OPENAI_API_KEY },
-		ollama: { label: `Ollama (${OLLAMA_MODEL}, local)`, available: true },
+		ollama: { label: 'Ollama (runs in your browser, local)', available: true, local: true },
 	};
 }
 
@@ -247,52 +252,6 @@ function callClaudeAPI(systemPrompt, messages, maxTokens = 16384) {
 	});
 }
 
-// Shared function: call a local Ollama model and normalize the response into
-// the same { content: [{ text }] } shape the client expects from Claude.
-function callOllamaAPI(systemPrompt, messages, maxTokens = 16384) {
-	return new Promise((resolve, reject) => {
-		const postBody = JSON.stringify({
-			model: OLLAMA_MODEL,
-			stream: false,
-			options: { num_predict: maxTokens },
-			messages: [{ role: 'system', content: systemPrompt }, ...messages]
-		});
-
-		const url = new URL('/api/chat', OLLAMA_HOST);
-		const apiReq = http.request({
-			hostname: url.hostname,
-			port: url.port,
-			path: url.pathname,
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'Content-Length': Buffer.byteLength(postBody)
-			}
-		}, (apiRes) => {
-			let body = '';
-			apiRes.on('data', (chunk) => body += chunk);
-			apiRes.on('end', () => {
-				try {
-					const parsed = JSON.parse(body);
-					if (apiRes.statusCode >= 400) {
-						resolve({ error: true, status: apiRes.statusCode, data: { error: { message: parsed.error || body } } });
-					} else {
-						resolve({ error: false, data: { content: [{ text: parsed.message?.content || '' }] } });
-					}
-				} catch (e) {
-					reject(new Error(`Invalid JSON response from Ollama: ${body.slice(0, 200)}`));
-				}
-			});
-		});
-
-		apiReq.on('error', (err) => {
-			reject(new Error(`Could not reach Ollama at ${OLLAMA_HOST}: ${err.message}`));
-		});
-		apiReq.write(postBody);
-		apiReq.end();
-	});
-}
-
 // Shared function: call the OpenAI API and normalize the response into the
 // same { content: [{ text }] } shape the client expects from Claude.
 function callOpenAIAPI(systemPrompt, messages, maxTokens = 16384) {
@@ -344,7 +303,13 @@ function callOpenAIAPI(systemPrompt, messages, maxTokens = 16384) {
 function callLLM(systemPrompt, messages, maxTokens = 16384, backend) {
 	const chosen = (backend || LLM_BACKEND).toLowerCase();
 
-	if (chosen === 'ollama') return callOllamaAPI(systemPrompt, messages, maxTokens);
+	if (chosen === 'ollama') {
+		// The client should never actually send this - Ollama requests go
+		// straight from the browser to the user's local Ollama and never
+		// touch this endpoint. This only fires if that client-side branch
+		// was somehow bypassed.
+		return Promise.resolve({ error: true, status: 400, data: { error: { message: 'Ollama requests should go directly from the browser to localhost:11434, not through this server.' } } });
+	}
 
 	if (chosen === 'openai') {
 		if (!OPENAI_API_KEY) return Promise.resolve({ error: true, status: 400, data: { error: { message: 'OPENAI_API_KEY is not configured on the server.' } } });
@@ -358,6 +323,13 @@ function callLLM(systemPrompt, messages, maxTokens = 16384, backend) {
 // Tells the client which backends are actually usable, to populate the model dropdown.
 app.get('/api/backends', (req, res) => {
 	res.json({ backends: getAvailableBackends(), default: LLM_BACKEND });
+});
+
+// The system prompts, for the client to use when calling Ollama directly
+// (bypassing this server entirely) so there's still one source of truth for
+// them instead of a duplicated copy baked into main.js.
+app.get('/api/prompts', (req, res) => {
+	res.json({ systemPrompt: SYSTEM_PROMPT, fixCodePrompt: FIX_CODE_PROMPT });
 });
 
 // Proxy endpoint for the LLM chat backends

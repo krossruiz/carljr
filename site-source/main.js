@@ -69,6 +69,8 @@ const desktopChatInput = document.getElementById('desktop-chat-input');
 const desktopSendButton = document.getElementById('desktop-send-button');
 const desktopMicButton = document.getElementById('desktop-mic-button');
 const desktopModelSelect = document.getElementById('desktop-model-select');
+const desktopOllamaModelRow = document.getElementById('desktop-ollama-model-row');
+const desktopOllamaModelSelect = document.getElementById('desktop-ollama-model-select');
 const desktopChatMinimizeBtn = document.getElementById('desktop-chat-minimize');
 const desktopChatReopenBtn = document.getElementById('desktop-chat-reopen');
 const chatOverlayBar = document.getElementById('chat-overlay');
@@ -92,6 +94,61 @@ let messages = [];       // Full messages for API context (includes raw code blo
 let displayMessages = []; // Cleaned messages for canvas display
 let isLoading = false;
 let selectedBackend = null; // 'claude' | 'openai' | 'ollama' - set once /api/backends resolves
+let selectedOllamaModel = null; // e.g. 'llama3.2:latest' - set once the Ollama model list loads
+let cachedPrompts = null; // { systemPrompt, fixCodePrompt } - fetched once from /api/prompts
+
+// Ollama always runs on the SAME machine as the browser (this is what makes
+// it "local"), regardless of whether this page itself was loaded from
+// Vercel or from `python run.py`. So instead of proxying through this app's
+// own server (which, when deployed, has no network path to the visitor's
+// laptop at all), the browser talks to the user's Ollama directly. Ollama
+// allows localhost origins out of the box; reaching it from a non-localhost
+// origin (e.g. the hosted vrclaudeinterface.vercel.app) requires the user
+// to run Ollama with OLLAMA_ORIGINS set to include that origin (or "*").
+const OLLAMA_BASE_URL = 'http://localhost:11434';
+
+async function listOllamaModels() {
+	const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`);
+	if (!res.ok) throw new Error(`Ollama responded with ${res.status}`);
+	const data = await res.json();
+	return (data.models || []).map(m => m.name);
+}
+
+// Calls Ollama directly from the browser and normalizes the response into
+// the same { content: [{ text }] } shape the rest of the chat code expects
+// from the server-proxied backends.
+async function callOllamaDirect(systemPrompt, chatMessages, model, maxTokens = 16384) {
+	if (!model) throw new Error('No Ollama model selected.');
+	let res;
+	try {
+		res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				model,
+				stream: false,
+				options: { num_predict: maxTokens },
+				messages: [{ role: 'system', content: systemPrompt }, ...chatMessages]
+			})
+		});
+	} catch (networkErr) {
+		throw new Error(
+			`Could not reach Ollama at ${OLLAMA_BASE_URL} from the browser. Make sure Ollama is running` +
+			(location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'
+				? `, and since this page isn't on localhost, start Ollama with OLLAMA_ORIGINS including "${location.origin}" (or "*") so it accepts requests from this page.`
+				: '.')
+		);
+	}
+	const text = await res.text();
+	let data;
+	try {
+		data = JSON.parse(text);
+	} catch {
+		throw new Error(`Ollama returned non-JSON (${res.status}): ${text.slice(0, 150)}`);
+	}
+	if (!res.ok) throw new Error(data.error || `Ollama error: ${res.status}`);
+	return { content: [{ text: data.message?.content || '' }] };
+}
 let chatPanel = null;
 let chatTexture = null;
 let chatCanvas = null;
@@ -2095,30 +2152,59 @@ async function attemptAutoFix(failingCode, errorMessage, errorStack) {
 		updateStatus(`Fixing code (attempt ${attempt}/${MAX_FIX_ATTEMPTS})...`, '');
 		renderChatToCanvas();
 
+		const thisFailingCode = attempt === 1 ? failingCode : priorFixes[priorFixes.length - 1].code;
+
 		try {
-			const response = await fetch('/api/fix-code', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					failingCode: attempt === 1 ? failingCode : priorFixes[priorFixes.length - 1].code,
-					errorMessage,
-					errorStack,
-					attempt,
-					priorFixes,
-					backend: selectedBackend
-				})
-			});
-
-			const responseText = await response.text();
 			let data;
-			try {
-				data = JSON.parse(responseText);
-			} catch (e) {
-				throw new Error(`Fix API returned non-JSON: ${responseText.slice(0, 120)}`);
-			}
+			if (selectedBackend === 'ollama') {
+				// Built to match the server's /api/fix-code prompt exactly (see
+				// server.js) - kept client-side too so no code/error content has
+				// to transit the server just to reach the user's own local model.
+				let userContent = `The following vr-exec code block failed to execute.\n\n`;
+				userContent += `**Error:** \`${errorMessage}\`\n`;
+				if (errorStack) userContent += `**Stack:** \`${errorStack}\`\n`;
+				userContent += `**Attempt:** ${attempt} of ${MAX_FIX_ATTEMPTS}\n\n`;
+				userContent += `**Failing code:**\n\`\`\`javascript\n${thisFailingCode}\n\`\`\`\n\n`;
+				if (priorFixes.length > 0) {
+					userContent += `**Previous fix attempts that also failed:**\n`;
+					for (const fix of priorFixes) {
+						userContent += `\nAttempt ${fix.attempt} error: \`${fix.error}\`\n`;
+						userContent += `\`\`\`javascript\n${fix.code}\n\`\`\`\n`;
+					}
+					userContent += `\nThe prior fixes did not work. Try a different approach.\n`;
+				}
+				userContent += `\nFix this code. Return ONLY a single \`vr-exec\` code block.`;
 
-			if (!response.ok) {
-				throw new Error(data.error || `Fix API error: ${response.status}`);
+				data = await callOllamaDirect(
+					cachedPrompts?.fixCodePrompt || '',
+					[{ role: 'user', content: userContent }],
+					selectedOllamaModel,
+					8192
+				);
+			} else {
+				const response = await fetch('/api/fix-code', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						failingCode: thisFailingCode,
+						errorMessage,
+						errorStack,
+						attempt,
+						priorFixes,
+						backend: selectedBackend
+					})
+				});
+
+				const responseText = await response.text();
+				try {
+					data = JSON.parse(responseText);
+				} catch (e) {
+					throw new Error(`Fix API returned non-JSON: ${responseText.slice(0, 120)}`);
+				}
+
+				if (!response.ok) {
+					throw new Error(data.error || `Fix API error: ${response.status}`);
+				}
 			}
 
 			const fixedRaw = data.content[0]?.text || '';
@@ -2183,31 +2269,39 @@ async function sendMessage(userMessage) {
 	renderChatToCanvas();
 
 	try {
-		const response = await fetch('/api/chat', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json'
-			},
-			body: JSON.stringify({
-				messages: messages.map(m => ({
-					role: m.role,
-					content: m.content
-				})),
-				backend: selectedBackend
-			})
-		});
-
-		// Read as text first to avoid opaque JSON parse errors
-		const responseText = await response.text();
 		let data;
-		try {
-			data = JSON.parse(responseText);
-		} catch (parseErr) {
-			throw new Error(`Server returned non-JSON (${response.status}): ${responseText.slice(0, 120)}`);
-		}
+		if (selectedBackend === 'ollama') {
+			data = await callOllamaDirect(
+				cachedPrompts?.systemPrompt || '',
+				messages.map(m => ({ role: m.role, content: m.content })),
+				selectedOllamaModel
+			);
+		} else {
+			const response = await fetch('/api/chat', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					messages: messages.map(m => ({
+						role: m.role,
+						content: m.content
+					})),
+					backend: selectedBackend
+				})
+			});
 
-		if (!response.ok) {
-			throw new Error(data.error || `API error: ${response.status}`);
+			// Read as text first to avoid opaque JSON parse errors
+			const responseText = await response.text();
+			try {
+				data = JSON.parse(responseText);
+			} catch (parseErr) {
+				throw new Error(`Server returned non-JSON (${response.status}): ${responseText.slice(0, 120)}`);
+			}
+
+			if (!response.ok) {
+				throw new Error(data.error || `API error: ${response.status}`);
+			}
 		}
 		const rawText = data.content[0]?.text || 'No response';
 
@@ -2569,8 +2663,48 @@ if (micButton) {
 // for (GET /api/backends). Selecting an option is sent along with every
 // /api/chat and /api/fix-code request as `backend`.
 // ============================================================================
+async function refreshOllamaModelList() {
+	if (!desktopOllamaModelSelect) return;
+	desktopOllamaModelSelect.innerHTML = '<option>Checking for local Ollama...</option>';
+	desktopOllamaModelSelect.disabled = true;
+	try {
+		const names = await listOllamaModels();
+		desktopOllamaModelSelect.innerHTML = '';
+		if (names.length === 0) {
+			desktopOllamaModelSelect.innerHTML = '<option>No local models found (try "ollama pull llama3.2")</option>';
+			selectedOllamaModel = null;
+			return;
+		}
+		for (const name of names) {
+			const opt = document.createElement('option');
+			opt.value = name;
+			opt.textContent = name;
+			desktopOllamaModelSelect.appendChild(opt);
+		}
+		desktopOllamaModelSelect.disabled = false;
+		selectedOllamaModel = names.includes('llama3.2:latest') ? 'llama3.2:latest' : names[0];
+		desktopOllamaModelSelect.value = selectedOllamaModel;
+	} catch (err) {
+		console.error('Failed to reach local Ollama:', err);
+		desktopOllamaModelSelect.innerHTML = '<option>Could not reach Ollama - see chat for details</option>';
+		selectedOllamaModel = null;
+	}
+}
+
+function updateOllamaRowVisibility() {
+	if (!desktopOllamaModelRow) return;
+	desktopOllamaModelRow.style.display = selectedBackend === 'ollama' ? 'flex' : 'none';
+}
+
 async function initModelSelect() {
 	if (!desktopModelSelect) return;
+	try {
+		const res = await fetch('/api/prompts');
+		cachedPrompts = await res.json();
+	} catch (err) {
+		console.error('Failed to load /api/prompts (needed for the Ollama backend):', err);
+	}
+
 	try {
 		const res = await fetch('/api/backends');
 		const { backends, default: defaultBackend } = await res.json();
@@ -2587,6 +2721,8 @@ async function initModelSelect() {
 		const firstAvailable = Object.entries(backends).find(([, info]) => info.available)?.[0];
 		selectedBackend = backends[defaultBackend]?.available ? defaultBackend : (firstAvailable || defaultBackend);
 		desktopModelSelect.value = selectedBackend;
+		updateOllamaRowVisibility();
+		if (selectedBackend === 'ollama') refreshOllamaModelList();
 	} catch (err) {
 		console.error('Failed to load /api/backends:', err);
 	}
@@ -2594,6 +2730,12 @@ async function initModelSelect() {
 
 desktopModelSelect?.addEventListener('change', () => {
 	selectedBackend = desktopModelSelect.value;
+	updateOllamaRowVisibility();
+	if (selectedBackend === 'ollama') refreshOllamaModelList();
+});
+
+desktopOllamaModelSelect?.addEventListener('change', () => {
+	selectedOllamaModel = desktopOllamaModelSelect.value;
 });
 
 initModelSelect();
