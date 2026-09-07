@@ -69,6 +69,9 @@ const desktopChatMessages = document.getElementById('desktop-chat-messages');
 const desktopChatInput = document.getElementById('desktop-chat-input');
 const desktopSendButton = document.getElementById('desktop-send-button');
 const desktopMicButton = document.getElementById('desktop-mic-button');
+const desktopAttachButton = document.getElementById('desktop-attach-button');
+const desktopAttachInput = document.getElementById('desktop-attach-input');
+const desktopAttachmentsRow = document.getElementById('desktop-attachments');
 const desktopModelSelect = document.getElementById('desktop-model-select');
 const desktopOllamaModelRow = document.getElementById('desktop-ollama-model-row');
 const desktopOllamaModelSelect = document.getElementById('desktop-ollama-model-select');
@@ -182,6 +185,7 @@ let isLoading = false;
 let selectedBackend = null; // 'claude' | 'fable' | 'openai' | 'ollama' - set once /api/backends resolves
 let selectedOllamaModel = null; // e.g. 'llama3.2:latest' - set once the Ollama model list loads
 let cachedPrompts = null; // { systemPrompt, fixCodePrompt } - fetched once from /api/prompts
+let pendingAttachments = []; // files staged via the 📎 button, sent with the next message - see buildUserContent()
 
 // Ollama always runs on the SAME machine as the browser (this is what makes
 // it "local"), regardless of whether this page itself was loaded from
@@ -2670,14 +2674,158 @@ async function attemptAutoFix(failingCode, errorMessage, errorStack) {
 }
 
 // ============================================================================
+// Chat attachments (desktop only - images and text-ish files for context)
+// ============================================================================
+const MAX_ATTACHMENT_BYTES = 6 * 1024 * 1024; // 6MB raw per file
+const MAX_ATTACHMENTS = 4;
+const TEXTY_FILE_EXT = /\.(txt|md|markdown|json|js|jsx|ts|tsx|py|csv|html|htm|css|xml|yaml|yml|log|c|cpp|h|hpp|java|go|rs|sh|sql|ini|toml)$/i;
+
+function isTextyFile(file) {
+	return file.type.startsWith('text/') || file.type === 'application/json' || TEXTY_FILE_EXT.test(file.name);
+}
+
+function readFileAsDataURL(file) {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(reader.result);
+		reader.onerror = () => reject(reader.error || new Error('Read failed'));
+		reader.readAsDataURL(file);
+	});
+}
+
+function readFileAsText(file) {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(reader.result);
+		reader.onerror = () => reject(reader.error || new Error('Read failed'));
+		reader.readAsText(file);
+	});
+}
+
+async function addAttachments(fileList) {
+	for (const file of fileList) {
+		if (pendingAttachments.length >= MAX_ATTACHMENTS) {
+			updateStatus(`Only ${MAX_ATTACHMENTS} attachments at a time`, 'error');
+			break;
+		}
+		if (file.size > MAX_ATTACHMENT_BYTES) {
+			updateStatus(`"${file.name}" is too large (max ${MAX_ATTACHMENT_BYTES / (1024 * 1024)}MB)`, 'error');
+			continue;
+		}
+		try {
+			if (file.type.startsWith('image/')) {
+				const dataUrl = await readFileAsDataURL(file);
+				const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+				pendingAttachments.push({
+					id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+					name: file.name,
+					kind: 'image',
+					mediaType: file.type,
+					base64
+				});
+			} else if (isTextyFile(file)) {
+				const text = await readFileAsText(file);
+				pendingAttachments.push({
+					id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+					name: file.name,
+					kind: 'text',
+					text
+				});
+			} else {
+				updateStatus(`"${file.name}" isn't a supported type — images and text files only`, 'error');
+			}
+		} catch (err) {
+			updateStatus(`Couldn't read "${file.name}": ${err.message}`, 'error');
+		}
+	}
+	renderAttachmentChips();
+}
+
+function renderAttachmentChips() {
+	if (!desktopAttachmentsRow) return;
+	desktopAttachmentsRow.innerHTML = '';
+	desktopAttachmentsRow.hidden = pendingAttachments.length === 0;
+	for (const att of pendingAttachments) {
+		const chip = document.createElement('div');
+		chip.className = 'dchat-attachment-chip';
+
+		const icon = document.createElement('span');
+		icon.textContent = att.kind === 'image' ? '🖼️' : '📄';
+
+		const name = document.createElement('span');
+		name.className = 'dchat-attachment-name';
+		name.textContent = att.name;
+		name.title = att.name;
+
+		const remove = document.createElement('button');
+		remove.className = 'dchat-attachment-remove';
+		remove.textContent = '×';
+		remove.title = 'Remove';
+		remove.addEventListener('click', () => {
+			pendingAttachments = pendingAttachments.filter(a => a.id !== att.id);
+			renderAttachmentChips();
+		});
+
+		chip.append(icon, name, remove);
+		desktopAttachmentsRow.appendChild(chip);
+	}
+}
+
+// Shapes attached files into whatever the selected backend expects. Text
+// files fold directly into the plain-text message (works identically for
+// every backend); images need a backend-specific content shape, since
+// Anthropic, OpenAI, and Ollama each represent an inline image differently.
+function buildUserContent(userMessage, attachments, backend) {
+	let text = userMessage;
+	for (const att of attachments.filter(a => a.kind === 'text')) {
+		text += `\n\n--- File: ${att.name} ---\n${att.text}`;
+	}
+
+	const images = attachments.filter(a => a.kind === 'image');
+	if (images.length === 0) return { content: text };
+
+	if (backend === 'ollama') {
+		// Ollama's /api/chat takes images as a separate per-message field
+		// (raw base64, no "data:" prefix), not inline in content.
+		return { content: text || '(see attached image)', images: images.map(a => a.base64) };
+	}
+
+	if (backend === 'openai') {
+		const parts = [{ type: 'text', text: text || '(see attached image)' }];
+		for (const att of images) {
+			parts.push({ type: 'image_url', image_url: { url: `data:${att.mediaType};base64,${att.base64}` } });
+		}
+		return { content: parts };
+	}
+
+	// claude / fable (Anthropic content-block shape)
+	const parts = [{ type: 'text', text: text || '(see attached image)' }];
+	for (const att of images) {
+		parts.push({ type: 'image', source: { type: 'base64', media_type: att.mediaType, data: att.base64 } });
+	}
+	return { content: parts };
+}
+
+// ============================================================================
 // Claude API Integration (via proxy server)
 // ============================================================================
 async function sendMessage(userMessage) {
-	if (!userMessage.trim()) return;
+	if (!userMessage.trim() && pendingAttachments.length === 0) return;
+
+	// Fold attachments into this message, then clear the staging area - see
+	// buildUserContent() for how each attachment kind/backend is shaped.
+	const attachments = pendingAttachments;
+	pendingAttachments = [];
+	renderAttachmentChips();
+
+	const { content: userContent, images: ollamaImages } = buildUserContent(userMessage, attachments, selectedBackend);
 
 	// Add user message to both arrays
-	messages.push({ role: 'user', content: userMessage });
-	displayMessages.push({ role: 'user', content: userMessage });
+	messages.push({ role: 'user', content: userContent, ...(ollamaImages ? { images: ollamaImages } : {}) });
+	displayMessages.push({
+		role: 'user',
+		content: userMessage + (attachments.length > 0 ? `\n\n📎 ${attachments.map(a => a.name).join(', ')}` : '')
+	});
 	chatScrollOffset = 0; // auto-scroll to bottom on new message
 
 	// Set loading state BEFORE rendering so the "Claude is thinking..." indicator
@@ -2693,7 +2841,7 @@ async function sendMessage(userMessage) {
 		if (selectedBackend === 'ollama') {
 			data = await callOllamaDirect(
 				cachedPrompts?.systemPrompt || '',
-				messages.map(m => ({ role: m.role, content: m.content })),
+				messages.map(m => ({ role: m.role, content: m.content, ...(m.images ? { images: m.images } : {}) })),
 				selectedOllamaModel
 			);
 		} else {
@@ -3242,7 +3390,7 @@ initModelSelect();
 // ============================================================================
 desktopSendButton.addEventListener('click', () => {
 	const message = desktopChatInput.value.trim();
-	if (message) {
+	if (message || pendingAttachments.length > 0) {
 		sendMessage(message);
 		desktopChatInput.value = '';
 	}
@@ -3252,11 +3400,17 @@ desktopChatInput.addEventListener('keydown', (e) => {
 	if (e.key === 'Enter' && !e.shiftKey) {
 		e.preventDefault();
 		const message = desktopChatInput.value.trim();
-		if (message) {
+		if (message || pendingAttachments.length > 0) {
 			sendMessage(message);
 			desktopChatInput.value = '';
 		}
 	}
+});
+
+desktopAttachButton?.addEventListener('click', () => desktopAttachInput.click());
+desktopAttachInput?.addEventListener('change', (e) => {
+	addAttachments(e.target.files);
+	desktopAttachInput.value = '';
 });
 
 if (desktopMicButton) {

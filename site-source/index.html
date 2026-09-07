@@ -481,7 +481,7 @@
 		#desktop-chat-input::placeholder { color: rgba(255, 255, 255, 0.45); }
 		#desktop-chat-input:focus { background: rgba(255, 255, 255, 0.15); }
 
-		#desktop-mic-button, #desktop-send-button {
+		#desktop-mic-button, #desktop-send-button, #desktop-attach-button {
 			border: none;
 			border-radius: 11px;
 			color: #fff;
@@ -492,10 +492,54 @@
 			flex-shrink: 0;
 		}
 
-		#desktop-mic-button {
+		#desktop-mic-button, #desktop-attach-button {
 			background: rgba(255, 255, 255, 0.12);
 			padding: 10px 12px;
 		}
+
+		#desktop-attach-button:hover { background: rgba(255, 255, 255, 0.2); }
+
+		/* Staged file/image attachments, shown above the input row until sent. */
+		#desktop-attachments {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+			padding: 0 12px 8px;
+			flex-shrink: 0;
+		}
+
+		.dchat-attachment-chip {
+			display: flex;
+			align-items: center;
+			gap: 5px;
+			background: rgba(255, 255, 255, 0.1);
+			border-radius: 8px;
+			padding: 4px 6px 4px 8px;
+			font-size: 12px;
+			max-width: 160px;
+		}
+
+		.dchat-attachment-name {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.dchat-attachment-remove {
+			border: none;
+			background: rgba(239, 68, 68, 0.25);
+			color: #ef4444;
+			font-weight: 700;
+			width: 16px;
+			height: 16px;
+			line-height: 16px;
+			border-radius: 50%;
+			cursor: pointer;
+			flex-shrink: 0;
+			font-size: 11px;
+			padding: 0;
+		}
+		.dchat-attachment-remove:hover { background: rgba(239, 68, 68, 0.4); }
 
 		#desktop-mic-button.listening {
 			background: #ef4444;
@@ -891,7 +935,10 @@
 				<select id="desktop-ollama-model-select"></select>
 			</div>
 			<div id="desktop-chat-messages"></div>
+			<div id="desktop-attachments" hidden></div>
 			<div id="desktop-chat-input-row">
+				<input type="file" id="desktop-attach-input" multiple accept="image/*,.txt,.md,.markdown,.json,.js,.jsx,.ts,.tsx,.py,.csv,.html,.htm,.css,.xml,.yaml,.yml,.log,.c,.cpp,.h,.hpp,.java,.go,.rs,.sh,.sql,.ini,.toml" hidden />
+				<button id="desktop-attach-button" title="Attach images or text files">📎</button>
 				<input type="text" id="desktop-chat-input" placeholder="Ask Claude something..." autocomplete="off" />
 				<button id="desktop-mic-button" title="Toggle always-on voice input">🎤</button>
 				<button id="desktop-send-button">Send</button>

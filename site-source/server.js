@@ -63,7 +63,9 @@ if (!CLAUDE_API_KEY && !OPENAI_API_KEY) {
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+// 25mb: chat requests can now carry a handful of base64-encoded image
+// attachments (each ~33% larger than its raw file size once encoded).
+app.use(express.json({ limit: '25mb' }));
 
 // Serve static files
 app.use(express.static(__dirname));
@@ -193,18 +195,28 @@ Top-level \`await\` IS allowed because the function is async.
 4. If Three.js addon classes are needed but unavailable, replace with equivalent base Three.js code (e.g. replace TextGeometry with canvas texture text, replace CSG with manual geometry).
 5. Keep the original intent of the code intact.`;
 
+// Thinking tokens Fable 5.1 is allowed to spend before it must produce its
+// answer - see the comment below for why this has to be bounded.
+const FABLE_THINKING_BUDGET = 4096;
+
 // Shared function: call Claude API and return parsed response
 function callClaudeAPI(systemPrompt, messages, maxTokens = 16384, model = 'claude-sonnet-5') {
 	return new Promise((resolve, reject) => {
+		const isFable = model === 'claude-fable-5-1';
 		const postBody = JSON.stringify({
 			model,
-			max_tokens: maxTokens,
-			// Thinking is on by default on Sonnet 5; disable it to keep VR latency
-			// low. Fable 5.1 doesn't support thinking.type.disabled at all (only
-			// "enabled" or omitted, which defaults to adaptive) - for that model
-			// thinking is left unspecified, and the first text block is picked out
-			// of the response below instead of assuming content[0] is text.
+			// Fable 5.1: max_tokens is a shared cap over thinking + the actual
+			// answer. Left alone (adaptive thinking, unbounded within max_tokens),
+			// a harder prompt can spend the whole budget thinking and hit
+			// max_tokens before writing any answer text at all - the response
+			// still comes back 200 OK, just with no text block, which looked like
+			// the request "hanging" / getting no response. Explicitly bounding
+			// the thinking budget and adding it on top of max_tokens guarantees
+			// maxTokens' worth of room is always left for the answer itself.
+			max_tokens: isFable ? maxTokens + FABLE_THINKING_BUDGET : maxTokens,
+			// Thinking is on by default on Sonnet 5; disable it to keep VR latency low.
 			...(model === 'claude-sonnet-5' ? { thinking: { type: 'disabled' } } : {}),
+			...(isFable ? { thinking: { type: 'enabled', budget_tokens: FABLE_THINKING_BUDGET } } : {}),
 			system: systemPrompt,
 			messages: messages
 		});
