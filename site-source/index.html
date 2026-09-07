@@ -330,11 +330,15 @@
 		/* --- Scenes tab (export / load / manage saved scenes) --- */
 		#dchat-scenes { padding: 14px; gap: 10px; overflow: hidden; }
 
-		#dchat-scenes-buttons { display: flex; gap: 8px; flex-shrink: 0; }
-		#dchat-scenes-buttons .dchat-btn { flex: 1; }
+		#dchat-scenes-buttons { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+		#dchat-scenes-buttons .dchat-btn { flex: 1; min-width: 100px; font-size: 12px; padding: 8px 6px; }
 		#dchat-scenes-buttons .dchat-btn.export { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
 		#dchat-scenes-buttons .dchat-btn.import { background: rgba(255, 255, 255, 0.1); }
 		#dchat-scenes-buttons .dchat-btn.load { background: linear-gradient(135deg, #10b981, #059669); }
+
+		#dchat-community-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; min-height: 0; margin-top: 10px; }
+		#dchat-community-list::-webkit-scrollbar { width: 8px; }
+		#dchat-community-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
 
 		#dchat-scene-list {
 			flex: 1;
@@ -710,8 +714,8 @@
 			transform: scale(0.97);
 		}
 
-		/* Hidden file input */
-		#scene-file-input {
+		/* Hidden file inputs */
+		#scene-file-input, #scene-folder-input {
 			display: none;
 		}
 
@@ -761,8 +765,12 @@
 		<div id="status">Ready</div>
 		<button id="ui-toggle">Hide UI</button>
 
-		<!-- Scene file input (hidden) -->
-		<input type="file" id="scene-file-input" multiple accept=".vrscene,.json,*" />
+		<!-- Scene file input (hidden). Note: "*" is not a valid accept value and
+		     made Chrome's file picker filter out everything, appearing to show
+		     only folders - only list real extensions/MIME types here. -->
+		<input type="file" id="scene-file-input" multiple accept=".vrscene,.json,application/json" />
+		<!-- Whole-folder import (hidden) -->
+		<input type="file" id="scene-folder-input" webkitdirectory directory multiple />
 
 		<!-- Export modal -->
 		<div id="export-modal">
@@ -781,6 +789,7 @@
 				</div>
 				<div class="export-modal-buttons">
 					<button id="export-cancel-btn">Cancel</button>
+					<button id="export-download-btn">Save to Device</button>
 					<button id="export-confirm-btn">Export</button>
 				</div>
 			</div>
@@ -807,6 +816,7 @@
 			<button class="dchat-tab active" data-tab="chat">💬 Chat</button>
 			<button class="dchat-tab" data-tab="env">🎨 Environment</button>
 			<button class="dchat-tab" data-tab="scenes">📁 Scenes</button>
+			<button class="dchat-tab" data-tab="community">🌐 Community</button>
 		</div>
 
 		<div id="dchat-panel-chat" class="dchat-panel active">
@@ -873,10 +883,21 @@
 				<div id="dchat-scenes-buttons">
 					<button id="dchat-export-btn" class="dchat-btn export">Export</button>
 					<button id="dchat-import-btn" class="dchat-btn import">Import File</button>
+					<button id="dchat-import-folder-btn" class="dchat-btn import">Import Folder</button>
 					<button id="dchat-load-server-btn" class="dchat-btn load">Load Saved</button>
 				</div>
 				<div id="dchat-scene-list"></div>
 				<button id="dchat-export-combined" class="dchat-btn">Export Combined</button>
+			</div>
+		</div>
+
+		<div id="dchat-panel-community" class="dchat-panel">
+			<div id="dchat-community" style="display:flex;flex-direction:column;flex:1;min-height:0">
+				<div id="dchat-scenes-buttons">
+					<button id="dchat-community-upload-btn" class="dchat-btn export">Upload Current Scene</button>
+					<button id="dchat-community-refresh-btn" class="dchat-btn secondary">Refresh</button>
+				</div>
+				<div id="dchat-community-list"></div>
 			</div>
 		</div>
 

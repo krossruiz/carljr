@@ -84,9 +84,13 @@ const dchatResetCameraBtn = document.getElementById('dchat-reset-camera');
 const dchatNavType = document.getElementById('dchat-nav-type');
 const dchatExportBtn = document.getElementById('dchat-export-btn');
 const dchatImportBtn = document.getElementById('dchat-import-btn');
+const dchatImportFolderBtn = document.getElementById('dchat-import-folder-btn');
 const dchatLoadServerBtn = document.getElementById('dchat-load-server-btn');
 const dchatSceneList = document.getElementById('dchat-scene-list');
 const dchatExportCombinedBtn = document.getElementById('dchat-export-combined');
+const dchatCommunityUploadBtn = document.getElementById('dchat-community-upload-btn');
+const dchatCommunityRefreshBtn = document.getElementById('dchat-community-refresh-btn');
+const dchatCommunityList = document.getElementById('dchat-community-list');
 
 // ============================================================================
 // State
@@ -1413,6 +1417,7 @@ function handleSidePanelHit(uv) {
 // Scene Manager
 // ============================================================================
 const fileInput = document.getElementById('scene-file-input');
+const folderInput = document.getElementById('scene-folder-input');
 const exportModal = document.getElementById('export-modal');
 const exportNameInput = document.getElementById('export-name');
 const exportExtInput = document.getElementById('export-ext');
@@ -1420,6 +1425,7 @@ const exportPreview = document.getElementById('export-preview');
 const exportScreenshotBtn = document.getElementById('export-screenshot-btn');
 const exportCancelBtn = document.getElementById('export-cancel-btn');
 const exportConfirmBtn = document.getElementById('export-confirm-btn');
+const exportDownloadBtn = document.getElementById('export-download-btn');
 
 let pendingExportThumbnail = null;
 let pendingExportCombined = false;
@@ -1527,24 +1533,32 @@ function hideExportModal() {
 	exportModal.style.display = 'none';
 }
 
-function doExport() {
-	const name = exportNameInput.value.trim() || 'Untitled';
-	const ext = exportExtInput.value.trim().replace(/^\./, '') || 'vrscene';
-	sceneFileExtension = ext;
-
+// Gathers the current exportable scene (active loaded scenes + this
+// session's chat-executed code) into the on-disk/on-wire scene format.
+// Shared by "Export" (save to server), "Save to Device" (local download),
+// and "Upload Current Scene" (community).
+function buildSceneData(name) {
 	const codeBlocks = [];
 	for (const sc of loadedScenes) {
 		if (sc.active) codeBlocks.push(...sc.codeBlocks);
 	}
 	codeBlocks.push(...executedCodeBlocks);
 
-	const sceneData = {
+	return {
 		version: 1,
 		name,
 		createdAt: new Date().toISOString(),
 		thumbnail: pendingExportThumbnail || '',
 		codeBlocks
 	};
+}
+
+function doExport() {
+	const name = exportNameInput.value.trim() || 'Untitled';
+	const ext = exportExtInput.value.trim().replace(/^\./, '') || 'vrscene';
+	sceneFileExtension = ext;
+
+	const sceneData = buildSceneData(name);
 
 	fetch('/api/save-scene', {
 		method: 'POST',
@@ -1563,34 +1577,64 @@ function doExport() {
 	hideExportModal();
 }
 
+// Downloads the current scene as a local file (a real save-to-disk, unlike
+// "Export" above which only saves to this server's single scene slot).
+function doDownloadExport() {
+	const name = exportNameInput.value.trim() || 'Untitled';
+	const ext = exportExtInput.value.trim().replace(/^\./, '') || 'vrscene';
+	sceneFileExtension = ext;
+
+	const sceneData = buildSceneData(name);
+	const blob = new Blob([JSON.stringify(sceneData, null, 2)], { type: 'application/json' });
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = `${name.replace(/[\\/:*?"<>|]+/g, '_')}.${ext}`;
+	document.body.appendChild(a);
+	a.click();
+	a.remove();
+	URL.revokeObjectURL(url);
+
+	updateStatus(`Saved "${name}" to your device`, 'connected');
+	hideExportModal();
+}
+
+// Adds a loaded scene's code blocks to the scene, runs them, and refreshes
+// the scene list/thumbnails. Shared by file import, folder import, the
+// single server-saved scene, and community scenes.
+function addLoadedScene(data, fallbackName) {
+	if (!data || !data.codeBlocks || !Array.isArray(data.codeBlocks)) {
+		throw new Error('Invalid scene data: missing codeBlocks');
+	}
+	const sc = {
+		id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+		name: data.name || fallbackName,
+		thumbnail: data.thumbnail || '',
+		codeBlocks: data.codeBlocks,
+		active: true,
+		createdAt: data.createdAt || new Date().toISOString(),
+		_thumbImage: null
+	};
+	loadedScenes.push(sc);
+
+	// Execute the scene's code blocks (async; surface failures via console)
+	for (const code of sc.codeBlocks) {
+		Promise.resolve(executeVrCode(code)).catch(err => {
+			console.error(`Scene "${sc.name}" load error:`, err);
+		});
+	}
+
+	loadSceneThumbnails();
+	renderScenePanel();
+	return sc;
+}
+
 function loadSceneFile(file) {
 	const reader = new FileReader();
 	reader.onload = (e) => {
 		try {
 			const data = JSON.parse(e.target.result);
-			if (!data.codeBlocks || !Array.isArray(data.codeBlocks)) {
-				throw new Error('Invalid scene file: missing codeBlocks');
-			}
-			const sc = {
-				id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-				name: data.name || file.name.replace(/\.[^.]+$/, ''),
-				thumbnail: data.thumbnail || '',
-				codeBlocks: data.codeBlocks,
-				active: true,
-				createdAt: data.createdAt || new Date().toISOString(),
-				_thumbImage: null
-			};
-			loadedScenes.push(sc);
-
-			// Execute the scene's code blocks (async; surface failures via console)
-			for (const code of sc.codeBlocks) {
-				Promise.resolve(executeVrCode(code)).catch(err => {
-					console.error(`Scene "${sc.name}" load error:`, err);
-				});
-			}
-
-			loadSceneThumbnails();
-			renderScenePanel();
+			const sc = addLoadedScene(data, file.name.replace(/\.[^.]+$/, ''));
 			updateStatus(`Loaded "${sc.name}"`, 'connected');
 		} catch (err) {
 			console.error('Error parsing scene file:', err);
@@ -1605,6 +1649,18 @@ fileInput.addEventListener('change', (e) => {
 	fileInput.value = '';
 });
 
+// Whole-folder import: webkitdirectory hands back every file in the tree,
+// so only pick up the scene files and ignore anything else that's in there.
+folderInput.addEventListener('change', (e) => {
+	const files = [...e.target.files].filter(f => /\.(vrscene|json)$/i.test(f.name));
+	if (files.length === 0) {
+		updateStatus('No .vrscene/.json files found in that folder', 'error');
+	} else {
+		for (const file of files) loadSceneFile(file);
+	}
+	folderInput.value = '';
+});
+
 function loadSceneFromServer() {
 	updateStatus('Loading scene...', 'connecting');
 	fetch('/api/load-scene')
@@ -1613,26 +1669,95 @@ function loadSceneFromServer() {
 			return res.json();
 		})
 		.then(data => {
-			if (!data.codeBlocks || !Array.isArray(data.codeBlocks)) {
-				throw new Error('Invalid scene data');
-			}
-			const sc = {
-				id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-				name: data.name || 'Loaded Scene',
-				thumbnail: data.thumbnail || '',
-				codeBlocks: data.codeBlocks,
-				active: true,
-				createdAt: data.createdAt || new Date().toISOString(),
-				_thumbImage: null
-			};
-			loadedScenes.push(sc);
-			for (const code of sc.codeBlocks) {
-				Promise.resolve(executeVrCode(code)).catch(err => {
-					console.error(`Scene "${sc.name}" load error:`, err);
-				});
-			}
-			loadSceneThumbnails();
-			renderScenePanel();
+			const sc = addLoadedScene(data, 'Loaded Scene');
+			updateStatus(`Loaded "${sc.name}"`, 'connected');
+		})
+		.catch(err => {
+			updateStatus(`Load error: ${err.message}`, 'error');
+		});
+}
+
+// --- Community scenes (shared, persistent, server-side via /api/community-scenes) ---
+
+function uploadCurrentSceneToCommunity() {
+	const name = (loadedScenes.find(s => s.active)?.name) || 'My Scene';
+	const sceneData = buildSceneData(name);
+	if (sceneData.codeBlocks.length === 0) {
+		updateStatus('Nothing to upload - add or load something first', 'error');
+		return;
+	}
+	updateStatus('Uploading to community...', 'connecting');
+	fetch('/api/community-scenes', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(sceneData)
+	}).then(res => res.json().then(data => ({ ok: res.ok, data }))).then(({ ok, data }) => {
+		if (!ok || data.error) throw new Error(data.error || 'Upload failed');
+		updateStatus(`Uploaded "${name}" to community`, 'connected');
+		refreshCommunityScenes();
+	}).catch(err => {
+		updateStatus(`Upload error: ${err.message}`, 'error');
+	});
+}
+
+function refreshCommunityScenes() {
+	if (!dchatCommunityList) return;
+	dchatCommunityList.innerHTML = '<div class="dchat-scene-empty">Loading...</div>';
+	fetch('/api/community-scenes')
+		.then(res => res.json().then(data => ({ ok: res.ok, data })))
+		.then(({ ok, data }) => {
+			if (!ok || data.error) throw new Error(data.error || 'Failed to list community scenes');
+			renderCommunitySceneList(data.scenes || []);
+		})
+		.catch(err => {
+			dchatCommunityList.innerHTML = '';
+			const empty = document.createElement('div');
+			empty.className = 'dchat-scene-empty';
+			empty.textContent = err.message;
+			dchatCommunityList.appendChild(empty);
+		});
+}
+
+function renderCommunitySceneList(scenes) {
+	dchatCommunityList.innerHTML = '';
+	if (scenes.length === 0) {
+		const empty = document.createElement('div');
+		empty.className = 'dchat-scene-empty';
+		empty.textContent = 'No community scenes yet. Be the first to upload one!';
+		dchatCommunityList.appendChild(empty);
+		return;
+	}
+	for (const cs of scenes) {
+		const item = document.createElement('div');
+		item.className = 'dchat-scene-item';
+
+		const name = document.createElement('div');
+		name.className = 'dchat-scene-name';
+		name.textContent = cs.name;
+		name.title = cs.name;
+
+		const load = document.createElement('button');
+		load.className = 'dchat-btn';
+		load.style.flexShrink = '0';
+		load.style.width = 'auto';
+		load.style.padding = '6px 10px';
+		load.textContent = 'Load';
+		load.addEventListener('click', () => loadCommunityScene(cs));
+
+		item.append(name, load);
+		dchatCommunityList.appendChild(item);
+	}
+}
+
+function loadCommunityScene(cs) {
+	updateStatus(`Loading "${cs.name}"...`, 'connecting');
+	fetch(cs.url)
+		.then(res => {
+			if (!res.ok) throw new Error('Failed to fetch community scene');
+			return res.json();
+		})
+		.then(data => {
+			const sc = addLoadedScene(data, cs.name);
 			updateStatus(`Loaded "${sc.name}"`, 'connected');
 		})
 		.catch(err => {
@@ -1646,6 +1771,7 @@ exportScreenshotBtn.addEventListener('click', () => {
 });
 exportCancelBtn.addEventListener('click', hideExportModal);
 exportConfirmBtn.addEventListener('click', doExport);
+exportDownloadBtn.addEventListener('click', doDownloadExport);
 
 // Scene Manager 3D Panel
 function createScenePanel() {
@@ -3007,13 +3133,14 @@ document.addEventListener('keydown', (e) => {
 	desktopChat.style.top = `${top}px`;
 });
 
-// Tabs: Chat / Environment / Scenes.
+// Tabs: Chat / Environment / Scenes / Community.
 document.querySelectorAll('.dchat-tab').forEach(tab => {
 	tab.addEventListener('click', () => {
 		document.querySelectorAll('.dchat-tab').forEach(t => t.classList.remove('active'));
 		document.querySelectorAll('.dchat-panel').forEach(p => p.classList.remove('active'));
 		tab.classList.add('active');
 		document.getElementById(`dchat-panel-${tab.dataset.tab}`).classList.add('active');
+		if (tab.dataset.tab === 'community') refreshCommunityScenes();
 	});
 });
 
@@ -3055,7 +3182,10 @@ dchatResetCameraBtn.addEventListener('click', () => {
 // canvas scene panel (handleScenePanelHit) onto the desktop.
 dchatExportBtn.addEventListener('click', () => showExportModal(false));
 dchatImportBtn.addEventListener('click', () => fileInput.click());
+dchatImportFolderBtn.addEventListener('click', () => folderInput.click());
 dchatLoadServerBtn.addEventListener('click', () => loadSceneFromServer());
+dchatCommunityUploadBtn.addEventListener('click', () => uploadCurrentSceneToCommunity());
+dchatCommunityRefreshBtn.addEventListener('click', () => refreshCommunityScenes());
 dchatExportCombinedBtn.addEventListener('click', () => {
 	if ((loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0) && loadedScenes.length > 0) {
 		showExportModal(true);

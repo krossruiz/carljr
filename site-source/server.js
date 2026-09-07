@@ -7,6 +7,7 @@ import https from 'https';
 import dns from 'dns';
 import fs from 'fs';
 import selfsigned from 'selfsigned';
+import { put, list } from '@vercel/blob';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -62,7 +63,7 @@ if (!CLAUDE_API_KEY && !OPENAI_API_KEY) {
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
 // Serve static files
 app.use(express.static(__dirname));
@@ -434,6 +435,66 @@ app.get('/api/load-scene', (req, res) => {
 		res.json(JSON.parse(data));
 	} catch (error) {
 		console.error('Load scene error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+// Community scene sharing, backed by Vercel Blob so uploads are real,
+// persistent, and visible to every visitor (not just the uploader's warm
+// function instance). Requires a Blob store to be linked to the Vercel
+// project, which auto-provides BLOB_READ_WRITE_TOKEN; without it these
+// endpoints report a clear error instead of a confusing storage failure.
+const COMMUNITY_PREFIX = 'community-scenes/';
+
+app.post('/api/community-scenes', async (req, res) => {
+	if (!process.env.BLOB_READ_WRITE_TOKEN) {
+		return res.status(501).json({ error: 'Community uploads aren\'t configured on this server (no Blob store linked).' });
+	}
+	try {
+		const sceneData = req.body;
+		if (!sceneData || !sceneData.codeBlocks || !Array.isArray(sceneData.codeBlocks)) {
+			return res.status(400).json({ error: 'Invalid scene data: missing codeBlocks array' });
+		}
+		const name = (sceneData.name || 'Untitled').slice(0, 80);
+		// Encode the exact name into the pathname (rather than a lossy slug) so
+		// listing can show the real name without fetching every blob's content.
+		const pathname = `${COMMUNITY_PREFIX}${Date.now()}--${encodeURIComponent(name)}.json`;
+		const blob = await put(pathname, JSON.stringify({ ...sceneData, name }), {
+			access: 'public',
+			contentType: 'application/json',
+			addRandomSuffix: false
+		});
+		res.json({ ok: true, url: blob.url, pathname: blob.pathname });
+	} catch (error) {
+		console.error('Community upload error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+app.get('/api/community-scenes', async (req, res) => {
+	if (!process.env.BLOB_READ_WRITE_TOKEN) {
+		return res.status(501).json({ error: 'Community uploads aren\'t configured on this server (no Blob store linked).' });
+	}
+	try {
+		const { blobs } = await list({ prefix: COMMUNITY_PREFIX });
+		const scenes = blobs
+			.map(b => {
+				const base = b.pathname.slice(COMMUNITY_PREFIX.length).replace(/\.json$/, '');
+				const sep = base.indexOf('--');
+				const encoded = sep >= 0 ? base.slice(sep + 2) : base;
+				let name = 'Untitled';
+				try { name = decodeURIComponent(encoded) || name; } catch { /* keep default */ }
+				return {
+					url: b.url,
+					name,
+					uploadedAt: b.uploadedAt,
+					size: b.size
+				};
+			})
+			.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+		res.json({ scenes });
+	} catch (error) {
+		console.error('Community list error:', error);
 		res.status(500).json({ error: error.message });
 	}
 });
