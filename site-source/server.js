@@ -199,10 +199,12 @@ function callClaudeAPI(systemPrompt, messages, maxTokens = 16384, model = 'claud
 		const postBody = JSON.stringify({
 			model,
 			max_tokens: maxTokens,
-			// Thinking is on by default on Sonnet 5/Fable 5.1; disable it so
-			// content[0] stays a text block (the client reads data.content[0].text)
-			// and to keep VR latency low.
-			thinking: { type: 'disabled' },
+			// Thinking is on by default on Sonnet 5; disable it to keep VR latency
+			// low. Fable 5.1 doesn't support thinking.type.disabled at all (only
+			// "enabled" or omitted, which defaults to adaptive) - for that model
+			// thinking is left unspecified, and the first text block is picked out
+			// of the response below instead of assuming content[0] is text.
+			...(model === 'claude-sonnet-5' ? { thinking: { type: 'disabled' } } : {}),
 			system: systemPrompt,
 			messages: messages
 		});
@@ -240,6 +242,15 @@ function callClaudeAPI(systemPrompt, messages, maxTokens = 16384, model = 'claud
 					if (apiRes.statusCode >= 400) {
 						resolve({ error: true, status: apiRes.statusCode, data: parsed });
 					} else {
+						// Adaptive-thinking models (Fable 5.1) can put a "thinking"
+						// block before the "text" block - reorder so content[0] is
+						// always the text block, since the client reads it directly.
+						if (Array.isArray(parsed.content)) {
+							const textBlock = parsed.content.find(b => b.type === 'text');
+							if (textBlock && parsed.content[0] !== textBlock) {
+								parsed.content = [textBlock, ...parsed.content.filter(b => b !== textBlock)];
+							}
+						}
 						resolve({ error: false, data: parsed });
 					}
 				} catch (e) {
