@@ -7,7 +7,6 @@ import https from 'https';
 import dns from 'dns';
 import fs from 'fs';
 import selfsigned from 'selfsigned';
-import { put, list } from '@vercel/blob';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -444,7 +443,41 @@ app.get('/api/load-scene', (req, res) => {
 // function instance). Requires a Blob store to be linked to the Vercel
 // project, which auto-provides BLOB_READ_WRITE_TOKEN; without it these
 // endpoints report a clear error instead of a confusing storage failure.
+//
+// This talks to Vercel Blob's plain HTTP API directly with fetch, rather
+// than the @vercel/blob SDK: that package's "exports" map isn't traced
+// correctly by this project's legacy `builds`-based vercel.json config
+// (unlike express/cors/selfsigned, which have no "exports" field), so the
+// SDK never made it into the deployed function and every call 500'd with
+// "Cannot find package '@vercel/blob'".
 const COMMUNITY_PREFIX = 'community-scenes/';
+const BLOB_API_BASE = 'https://blob.vercel-storage.com';
+
+async function blobPut(pathname, content, contentType) {
+	const res = await fetch(`${BLOB_API_BASE}/${pathname}`, {
+		method: 'PUT',
+		headers: {
+			Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`,
+			'x-api-version': '7',
+			'x-content-type': contentType,
+			'x-add-random-suffix': '0'
+		},
+		body: content
+	});
+	if (!res.ok) throw new Error(`Blob upload failed: ${res.status} ${await res.text()}`);
+	return res.json();
+}
+
+async function blobList(prefix) {
+	const res = await fetch(`${BLOB_API_BASE}?prefix=${encodeURIComponent(prefix)}`, {
+		headers: {
+			Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`,
+			'x-api-version': '7'
+		}
+	});
+	if (!res.ok) throw new Error(`Blob list failed: ${res.status} ${await res.text()}`);
+	return res.json();
+}
 
 app.post('/api/community-scenes', async (req, res) => {
 	if (!process.env.BLOB_READ_WRITE_TOKEN) {
@@ -459,11 +492,7 @@ app.post('/api/community-scenes', async (req, res) => {
 		// Encode the exact name into the pathname (rather than a lossy slug) so
 		// listing can show the real name without fetching every blob's content.
 		const pathname = `${COMMUNITY_PREFIX}${Date.now()}--${encodeURIComponent(name)}.json`;
-		const blob = await put(pathname, JSON.stringify({ ...sceneData, name }), {
-			access: 'public',
-			contentType: 'application/json',
-			addRandomSuffix: false
-		});
+		const blob = await blobPut(pathname, JSON.stringify({ ...sceneData, name }), 'application/json');
 		res.json({ ok: true, url: blob.url, pathname: blob.pathname });
 	} catch (error) {
 		console.error('Community upload error:', error);
@@ -476,7 +505,7 @@ app.get('/api/community-scenes', async (req, res) => {
 		return res.status(501).json({ error: 'Community uploads aren\'t configured on this server (no Blob store linked).' });
 	}
 	try {
-		const { blobs } = await list({ prefix: COMMUNITY_PREFIX });
+		const { blobs } = await blobList(COMMUNITY_PREFIX);
 		const scenes = blobs
 			.map(b => {
 				const base = b.pathname.slice(COMMUNITY_PREFIX.length).replace(/\.json$/, '');
