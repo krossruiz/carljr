@@ -2236,7 +2236,7 @@ function renderScenePanel() {
 		}
 	} else {
 		// Community sub-tab: shared button spec + a simple name/Load list.
-		const btnLayout = buildButtonLayout(COMMUNITY_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 44, minWidth: 100, gap: 8 });
+		const btnLayout = buildButtonLayout(COMMUNITY_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 44, perRow: 2, gap: 8 });
 		scenePanelButtonBoxes = btnLayout.boxes;
 		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 15 });
 
@@ -3447,7 +3447,7 @@ dchatResetCameraBtn.addEventListener('click', () => {
 // renderDomSceneList via the .visible class on its mount div).
 mountButtonsToDOM(dchatScenesButtonsMount, SCENES_BUTTONS, { width: 384, height: 44, gap: 8, minWidth: 100, fontSize: 12 }, handleMenuAction);
 mountButtonsToDOM(dchatExportCombinedMount, EXPORT_COMBINED_BUTTON, { width: 384, height: 44, gap: 8, perRow: 1, fontSize: 13 }, handleMenuAction);
-mountButtonsToDOM(dchatCommunityButtonsMount, COMMUNITY_BUTTONS, { width: 384, height: 44, gap: 8, minWidth: 100, fontSize: 12 }, handleMenuAction);
+mountButtonsToDOM(dchatCommunityButtonsMount, COMMUNITY_BUTTONS, { width: 384, height: 44, gap: 8, perRow: 2, fontSize: 12 }, handleMenuAction);
 
 // Switches between the desktop chat window (windowed browser) and the slim
 // dom-overlay bar (AR/VR immersive session), and shows/hides the legacy 3D
