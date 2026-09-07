@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { XRButton } from './threejsAddons/XRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { buildButtonLayout, drawButtonsToCanvas, hitTestButtons, mountButtonsToDOM } from './menuSystem.js';
 
 // ============================================================================
 // Configuration
@@ -74,23 +75,103 @@ const desktopOllamaModelSelect = document.getElementById('desktop-ollama-model-s
 const desktopChatMinimizeBtn = document.getElementById('desktop-chat-minimize');
 const desktopChatReopenBtn = document.getElementById('desktop-chat-reopen');
 const chatOverlayBar = document.getElementById('chat-overlay');
-const dchatEnvModeAr = document.getElementById('dchat-env-ar');
-const dchatEnvModeVr = document.getElementById('dchat-env-vr');
+const dchatEnvModeMount = document.getElementById('dchat-env-mode');
 const dchatEnvControls = document.getElementById('dchat-env-controls');
 const dchatColorPicker = document.getElementById('dchat-color-picker');
 const dchatColorPreview = document.getElementById('dchat-color-preview');
 const dchatBrightness = document.getElementById('dchat-brightness');
 const dchatResetCameraBtn = document.getElementById('dchat-reset-camera');
 const dchatNavType = document.getElementById('dchat-nav-type');
-const dchatExportBtn = document.getElementById('dchat-export-btn');
-const dchatImportBtn = document.getElementById('dchat-import-btn');
-const dchatImportFolderBtn = document.getElementById('dchat-import-folder-btn');
-const dchatLoadServerBtn = document.getElementById('dchat-load-server-btn');
+const dchatScenesButtonsMount = document.getElementById('dchat-scenes-buttons');
 const dchatSceneList = document.getElementById('dchat-scene-list');
-const dchatExportCombinedBtn = document.getElementById('dchat-export-combined');
-const dchatCommunityUploadBtn = document.getElementById('dchat-community-upload-btn');
-const dchatCommunityRefreshBtn = document.getElementById('dchat-community-refresh-btn');
+const dchatExportCombinedMount = document.getElementById('dchat-export-combined-mount');
+const dchatCommunityButtonsMount = document.getElementById('dchat-community-buttons');
 const dchatCommunityList = document.getElementById('dchat-community-list');
+
+// ============================================================================
+// Shared menu button specs (menuSystem.js) — the single source of truth for
+// every button that has to exist in both the desktop DOM menu and the XR
+// canvas panels. Add/rename/recolor a button here and both surfaces update:
+// desktop mounts these as a live <svg> (mountButtonsToDOM), XR draws the
+// exact same boxes onto its canvas texture (drawButtonsToCanvas) and hit-
+// tests controller rays against them (hitTestButtons). All click/hit paths
+// funnel into handleMenuAction() below, so behavior only needs to be
+// written once too.
+// ============================================================================
+const ENV_MODE_BUTTONS = [
+	{ id: 'ar', label: 'AR (passthrough)', action: 'env:ar' },
+	{ id: 'vr', label: 'VR (color)', action: 'env:vr' }
+];
+const SCENES_BUTTONS = [
+	{ id: 'export', label: 'Export', action: 'scenes:export', variant: 'accent' },
+	{ id: 'importFile', label: 'Import File', action: 'scenes:importFile' },
+	{ id: 'importFolder', label: 'Import Folder', action: 'scenes:importFolder' },
+	{ id: 'loadSaved', label: 'Load Saved', action: 'scenes:loadSaved', variant: 'success' }
+];
+const EXPORT_COMBINED_BUTTON = [
+	{ id: 'exportCombined', label: 'Export Combined', action: 'scenes:exportCombined', variant: 'warning' }
+];
+const COMMUNITY_BUTTONS = [
+	{ id: 'upload', label: 'Upload Current Scene', action: 'community:upload', variant: 'accent' },
+	{ id: 'refresh', label: 'Refresh', action: 'community:refresh' }
+];
+// Mini in-panel tabs drawn at the top of the XR scene panel, since it has
+// no separate mesh for Community (unlike desktop's tab bar) - see
+// SCENE_PANEL_SUB_TABS usage in renderScenePanel()/handleScenePanelHit().
+const SCENE_PANEL_SUB_TABS = [
+	{ id: 'scenes', label: 'Scenes', action: 'panel:scenes' },
+	{ id: 'community', label: 'Community', action: 'panel:community' }
+];
+
+// Routes both a desktop SVG click and an XR controller-ray/touch hit to the
+// same behavior, so the behavior itself is written exactly once.
+function handleMenuAction(action) {
+	switch (action) {
+		case 'env:ar':
+			isVRMode = false;
+			applyEnvironmentMode();
+			renderSidePanel();
+			renderDomEnv();
+			break;
+		case 'env:vr':
+			isVRMode = true;
+			applyEnvironmentMode();
+			renderSidePanel();
+			renderDomEnv();
+			break;
+		case 'scenes:export':
+			showExportModal(false);
+			break;
+		case 'scenes:importFile':
+			fileInput.click();
+			break;
+		case 'scenes:importFolder':
+			folderInput.click();
+			break;
+		case 'scenes:loadSaved':
+			loadSceneFromServer();
+			break;
+		case 'scenes:exportCombined':
+			if ((loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0) && loadedScenes.length > 0) {
+				showExportModal(true);
+			}
+			break;
+		case 'community:upload':
+			uploadCurrentSceneToCommunity();
+			break;
+		case 'community:refresh':
+			refreshCommunityScenes();
+			break;
+		case 'panel:scenes':
+			scenePanelSubTab = 'scenes';
+			renderScenePanel();
+			break;
+		case 'panel:community':
+			scenePanelSubTab = 'community';
+			refreshCommunityScenes();
+			break;
+	}
+}
 
 // ============================================================================
 // State
@@ -242,6 +323,14 @@ let executedCodeBlocks = [];  // vr-exec code blocks from current chat session
 let loadedScenes = [];        // imported scene files: { id, name, thumbnail, codeBlocks, active, createdAt, _thumbImage }
 let sceneScrollOffset = 0;
 let sceneFileExtension = 'vrscene';
+let scenePanelSubTab = 'scenes'; // 'scenes' | 'community' - see SCENE_PANEL_SUB_TABS
+let communityScenesCache = []; // last-fetched list, so the XR panel has something to draw without re-fetching every frame
+// Button hitboxes from the most recent draw of each canvas panel, reused
+// by handleSidePanelHit/handleScenePanelHit (see menuSystem.js hitTestButtons).
+let sidePanelEnvButtonBoxes = [];
+let scenePanelButtonBoxes = [];
+let scenePanelSubTabBoxes = [];
+let scenePanelListTop = 0; // set by renderScenePanel, reused by handleScenePanelHit
 let systemObjectIds = new Set();
 let systemOverlayIds = new Set();
 
@@ -1350,9 +1439,12 @@ function hslToHex(h, s, l) {
 // into the desktop Environment tab. Safe to call before the desktop DOM
 // exists (e.g. not yet — guarded by null checks below).
 function renderDomEnv() {
-	if (!dchatEnvModeAr) return;
-	dchatEnvModeAr.classList.toggle('active', !isVRMode);
-	dchatEnvModeVr.classList.toggle('active', isVRMode);
+	if (!dchatEnvModeMount) return;
+	const buttons = ENV_MODE_BUTTONS.map(b => ({
+		...b,
+		variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
+	}));
+	mountButtonsToDOM(dchatEnvModeMount, buttons, { width: 256, height: 40, gap: 6, fontSize: 13 }, handleMenuAction);
 	dchatEnvControls.classList.toggle('disabled', !isVRMode);
 	const hex = hslToHex(vrBgHue, vrBgSat, vrBgLight);
 	dchatColorPicker.value = hex;
@@ -1375,37 +1467,14 @@ function renderSidePanel() {
 	roundRect(ctx, 0, 0, w, h, 16);
 	ctx.fill();
 
-	// --- AR/VR Toggle Button (top area: y 16 to 100) ---
-	const btnY = 16;
-	const btnH = 80;
-	const btnPad = 16;
-
-	// Toggle track background
-	ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-	roundRect(ctx, btnPad, btnY, w - btnPad * 2, btnH, 14);
-	ctx.fill();
-
-	// Active side highlight
-	const halfW = (w - btnPad * 2) / 2;
-	if (!isVRMode) {
-		// AR active (left side)
-		ctx.fillStyle = 'rgba(16, 185, 129, 0.4)';
-		roundRect(ctx, btnPad + 2, btnY + 2, halfW - 2, btnH - 4, 12);
-		ctx.fill();
-	} else {
-		// VR active (right side)
-		ctx.fillStyle = 'rgba(99, 102, 241, 0.4)';
-		roundRect(ctx, btnPad + halfW, btnY + 2, halfW - 2, btnH - 4, 12);
-		ctx.fill();
-	}
-
-	// Labels
-	ctx.font = 'bold 28px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.textAlign = 'center';
-	ctx.fillStyle = !isVRMode ? '#10b981' : 'rgba(255,255,255,0.4)';
-	ctx.fillText('AR', btnPad + halfW / 2, btnY + btnH / 2 + 10);
-	ctx.fillStyle = isVRMode ? '#6366f1' : 'rgba(255,255,255,0.4)';
-	ctx.fillText('VR', btnPad + halfW + halfW / 2, btnY + btnH / 2 + 10);
+	// --- AR/VR Toggle Button (shared spec - see ENV_MODE_BUTTONS/handleMenuAction) ---
+	const envButtons = ENV_MODE_BUTTONS.map(b => ({
+		...b,
+		variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
+	}));
+	const envLayout = buildButtonLayout(envButtons, { width: w - 32, x: 16, y: 16, height: 80, perRow: 2, gap: 4 });
+	sidePanelEnvButtonBoxes = envLayout.boxes;
+	drawButtonsToCanvas(ctx, sidePanelEnvButtonBoxes, { fontSize: 24 });
 
 	// --- Section label ---
 	ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
@@ -1535,16 +1604,10 @@ function handleSidePanelHit(uv) {
 	const canvasX = uv.x * 256;
 	const canvasY = (1 - uv.y) * 768; // UV y is flipped vs canvas y
 
-	// AR/VR Toggle (y 16-96 on canvas)
-	if (canvasY >= 16 && canvasY <= 96) {
-		const halfW = 112; // roughly (256 - 32) / 2
-		if (canvasX < 128) {
-			isVRMode = false;
-		} else {
-			isVRMode = true;
-		}
-		applyEnvironmentMode();
-		renderSidePanel();
+	// AR/VR Toggle (shared spec - see ENV_MODE_BUTTONS/handleMenuAction)
+	const envHit = hitTestButtons(sidePanelEnvButtonBoxes, canvasX, canvasY);
+	if (envHit) {
+		handleMenuAction(envHit.action);
 		return;
 	}
 
@@ -1885,6 +1948,9 @@ function refreshCommunityScenes() {
 }
 
 function renderCommunitySceneList(scenes) {
+	communityScenesCache = scenes;
+	if (scenePanelSubTab === 'community') renderScenePanel();
+
 	dchatCommunityList.innerHTML = '';
 	if (scenes.length === 0) {
 		const empty = document.createElement('div');
@@ -2016,7 +2082,7 @@ function renderDomSceneList() {
 	}
 
 	const hasContent = loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0;
-	dchatExportCombinedBtn.classList.toggle('visible', hasContent && loadedScenes.length > 0);
+	dchatExportCombinedMount.classList.toggle('visible', hasContent && loadedScenes.length > 0);
 }
 
 function renderScenePanel() {
@@ -2038,154 +2104,187 @@ function renderScenePanel() {
 	ctx.fillStyle = 'rgba(139, 92, 246, 0.3)';
 	roundRect(ctx, 0, 0, w, 50, 16, true);
 	ctx.fill();
-
 	ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, sans-serif';
 	ctx.fillStyle = '#ffffff';
 	ctx.textAlign = 'center';
 	ctx.fillText('Scenes', w / 2, 35);
 
-	// Buttons row
-	const btnY = 60;
-	const btnH = 50;
-	const btnGap = 8;
-	const btnW = (w - 24 - btnGap) / 2;
+	// Sub-tabs (Scenes / Community) - the desktop menu has real top-level
+	// tabs for this; this panel has no separate mesh for Community, so it
+	// gets a mini in-panel tab bar instead. See SCENE_PANEL_SUB_TABS.
+	const subTabButtons = SCENE_PANEL_SUB_TABS.map(t => ({
+		...t,
+		variant: scenePanelSubTab === t.id ? 'active' : 'inactiveToggle'
+	}));
+	const subTabLayout = buildButtonLayout(subTabButtons, { width: w - 24, x: 12, y: 58, height: 36, perRow: 2, gap: 6 });
+	scenePanelSubTabBoxes = subTabLayout.boxes;
+	drawButtonsToCanvas(ctx, scenePanelSubTabBoxes, { fontSize: 15 });
 
-	// Export button
-	const exportGrad = ctx.createLinearGradient(12, btnY, 12 + btnW, btnY + btnH);
-	exportGrad.addColorStop(0, '#6366f1');
-	exportGrad.addColorStop(1, '#8b5cf6');
-	ctx.fillStyle = exportGrad;
-	roundRect(ctx, 12, btnY, btnW, btnH, 10);
-	ctx.fill();
-	ctx.font = 'bold 20px -apple-system, BlinkMacSystemFont, sans-serif';
-	ctx.fillStyle = '#ffffff';
-	ctx.textAlign = 'center';
-	ctx.fillText('Export', 12 + btnW / 2, btnY + btnH / 2 + 7);
+	const contentTop = 58 + subTabLayout.totalHeight + 10;
 
-	// Load button
-	const loadBtnX = 12 + btnW + btnGap;
-	const loadGrad = ctx.createLinearGradient(loadBtnX, btnY, loadBtnX + btnW, btnY + btnH);
-	loadGrad.addColorStop(0, '#10b981');
-	loadGrad.addColorStop(1, '#059669');
-	ctx.fillStyle = loadGrad;
-	roundRect(ctx, loadBtnX, btnY, btnW, btnH, 10);
-	ctx.fill();
-	ctx.fillStyle = '#ffffff';
-	ctx.fillText('Load', loadBtnX + btnW / 2, btnY + btnH / 2 + 7);
+	if (scenePanelSubTab === 'scenes') {
+		// Button row (shared spec - see SCENES_BUTTONS/handleMenuAction)
+		const btnLayout = buildButtonLayout(SCENES_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 44, minWidth: 100, gap: 8 });
+		scenePanelButtonBoxes = btnLayout.boxes;
+		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 15 });
 
-	// Separator
-	ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-	ctx.fillRect(12, 120, w - 24, 1);
+		// Separator
+		const sepY = contentTop + btnLayout.totalHeight + 8;
+		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+		ctx.fillRect(12, sepY, w - 24, 1);
 
-	// Scene list
-	const listTop = 128;
-	const itemH = 72;
-	const listBottom = 688;
-	const maxVisible = Math.floor((listBottom - listTop) / itemH);
+		// Scene list
+		const listTop = sepY + 8;
+		scenePanelListTop = listTop;
+		const itemH = 72;
+		const listBottom = 688;
+		const maxVisible = Math.floor((listBottom - listTop) / itemH);
 
-	if (loadedScenes.length === 0) {
-		ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-		ctx.textAlign = 'center';
-		ctx.fillText('No scenes loaded', w / 2, listTop + 40);
-		ctx.fillText('Tap Load to import', w / 2, listTop + 65);
-	} else {
-		const maxScroll = Math.max(0, loadedScenes.length - maxVisible);
-		sceneScrollOffset = Math.max(0, Math.min(sceneScrollOffset, maxScroll));
-
-		for (let i = 0; i < maxVisible && (i + sceneScrollOffset) < loadedScenes.length; i++) {
-			const sc = loadedScenes[i + sceneScrollOffset];
-			const itemY = listTop + i * itemH;
-
-			// Item background
-			ctx.fillStyle = sc.active ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.03)';
-			roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
-			ctx.fill();
-
-			// Checkbox
-			const chkX = 16, chkY = itemY + (itemH - 4) / 2 - 12;
-			ctx.strokeStyle = sc.active ? '#6366f1' : 'rgba(255,255,255,0.3)';
-			ctx.lineWidth = 2;
-			roundRect(ctx, chkX, chkY, 24, 24, 4);
-			ctx.stroke();
-			if (sc.active) {
-				ctx.fillStyle = '#6366f1';
-				roundRect(ctx, chkX + 2, chkY + 2, 20, 20, 3);
-				ctx.fill();
-				ctx.strokeStyle = '#ffffff';
-				ctx.lineWidth = 2.5;
-				ctx.beginPath();
-				ctx.moveTo(chkX + 6, chkY + 12);
-				ctx.lineTo(chkX + 11, chkY + 18);
-				ctx.lineTo(chkX + 19, chkY + 7);
-				ctx.stroke();
-			}
-
-			// Thumbnail
-			const thumbX = 48, thumbY2 = itemY + 8, thumbSize = itemH - 20;
-			if (sc._thumbImage) {
-				ctx.drawImage(sc._thumbImage, thumbX, thumbY2, thumbSize, thumbSize);
-			} else {
-				ctx.fillStyle = 'rgba(255,255,255,0.08)';
-				roundRect(ctx, thumbX, thumbY2, thumbSize, thumbSize, 6);
-				ctx.fill();
-				ctx.font = '10px sans-serif';
-				ctx.fillStyle = 'rgba(255,255,255,0.25)';
-				ctx.textAlign = 'center';
-				ctx.fillText('No img', thumbX + thumbSize / 2, thumbY2 + thumbSize / 2 + 4);
-			}
-
-			// Scene name
-			ctx.textAlign = 'left';
+		if (loadedScenes.length === 0) {
 			ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
-			ctx.fillStyle = '#ffffff';
-			const nameX = thumbX + thumbSize + 10;
-			const maxNameW = w - nameX - 40;
-			let dName = sc.name;
-			while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
-			if (dName !== sc.name) dName += '\u2026';
-			ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
-
-			// Remove button (X)
-			const xX = w - 36, xY = itemY + (itemH - 4) / 2 - 10;
-			ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
-			roundRect(ctx, xX, xY, 24, 24, 4);
-			ctx.fill();
-			ctx.font = 'bold 16px sans-serif';
-			ctx.fillStyle = '#ef4444';
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
 			ctx.textAlign = 'center';
-			ctx.fillText('\u00d7', xX + 12, xY + 18);
+			ctx.fillText('No scenes loaded', w / 2, listTop + 40);
+			ctx.fillText('Tap Load to import', w / 2, listTop + 65);
+		} else {
+			const maxScroll = Math.max(0, loadedScenes.length - maxVisible);
+			sceneScrollOffset = Math.max(0, Math.min(sceneScrollOffset, maxScroll));
+
+			for (let i = 0; i < maxVisible && (i + sceneScrollOffset) < loadedScenes.length; i++) {
+				const sc = loadedScenes[i + sceneScrollOffset];
+				const itemY = listTop + i * itemH;
+
+				// Item background
+				ctx.fillStyle = sc.active ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.03)';
+				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
+				ctx.fill();
+
+				// Checkbox
+				const chkX = 16, chkY = itemY + (itemH - 4) / 2 - 12;
+				ctx.strokeStyle = sc.active ? '#6366f1' : 'rgba(255,255,255,0.3)';
+				ctx.lineWidth = 2;
+				roundRect(ctx, chkX, chkY, 24, 24, 4);
+				ctx.stroke();
+				if (sc.active) {
+					ctx.fillStyle = '#6366f1';
+					roundRect(ctx, chkX + 2, chkY + 2, 20, 20, 3);
+					ctx.fill();
+					ctx.strokeStyle = '#ffffff';
+					ctx.lineWidth = 2.5;
+					ctx.beginPath();
+					ctx.moveTo(chkX + 6, chkY + 12);
+					ctx.lineTo(chkX + 11, chkY + 18);
+					ctx.lineTo(chkX + 19, chkY + 7);
+					ctx.stroke();
+				}
+
+				// Thumbnail
+				const thumbX = 48, thumbY2 = itemY + 8, thumbSize = itemH - 20;
+				if (sc._thumbImage) {
+					ctx.drawImage(sc._thumbImage, thumbX, thumbY2, thumbSize, thumbSize);
+				} else {
+					ctx.fillStyle = 'rgba(255,255,255,0.08)';
+					roundRect(ctx, thumbX, thumbY2, thumbSize, thumbSize, 6);
+					ctx.fill();
+					ctx.font = '10px sans-serif';
+					ctx.fillStyle = 'rgba(255,255,255,0.25)';
+					ctx.textAlign = 'center';
+					ctx.fillText('No img', thumbX + thumbSize / 2, thumbY2 + thumbSize / 2 + 4);
+				}
+
+				// Scene name
+				ctx.textAlign = 'left';
+				ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
+				ctx.fillStyle = '#ffffff';
+				const nameX = thumbX + thumbSize + 10;
+				const maxNameW = w - nameX - 40;
+				let dName = sc.name;
+				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
+				if (dName !== sc.name) dName += '\u2026';
+				ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
+
+				// Remove button (X)
+				const xX = w - 36, xY = itemY + (itemH - 4) / 2 - 10;
+				ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
+				roundRect(ctx, xX, xY, 24, 24, 4);
+				ctx.fill();
+				ctx.font = 'bold 16px sans-serif';
+				ctx.fillStyle = '#ef4444';
+				ctx.textAlign = 'center';
+				ctx.fillText('\u00d7', xX + 12, xY + 18);
+			}
+
+			// Scroll indicators
+			if (sceneScrollOffset > 0) {
+				ctx.fillStyle = 'rgba(255,255,255,0.3)';
+				ctx.font = '14px sans-serif';
+				ctx.textAlign = 'center';
+				ctx.fillText('\u25b2 more', w / 2, listTop - 4);
+			}
+			if (sceneScrollOffset < maxScroll) {
+				ctx.fillStyle = 'rgba(255,255,255,0.3)';
+				ctx.font = '14px sans-serif';
+				ctx.textAlign = 'center';
+				ctx.fillText('\u25bc more', w / 2, listBottom + 14);
+			}
 		}
 
-		// Scroll indicators
-		if (sceneScrollOffset > 0) {
-			ctx.fillStyle = 'rgba(255,255,255,0.3)';
-			ctx.font = '14px sans-serif';
-			ctx.textAlign = 'center';
-			ctx.fillText('\u25b2 more', w / 2, listTop - 4);
+		// Export Combined button (shared spec - see EXPORT_COMBINED_BUTTON)
+		const hasContent = loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0;
+		if (hasContent && loadedScenes.length > 0) {
+			drawButtonsToCanvas(ctx, buildButtonLayout(EXPORT_COMBINED_BUTTON, { width: w - 24, x: 12, y: 700, height: 48, perRow: 1 }).boxes, { fontSize: 18 });
 		}
-		if (sceneScrollOffset < maxScroll) {
-			ctx.fillStyle = 'rgba(255,255,255,0.3)';
-			ctx.font = '14px sans-serif';
-			ctx.textAlign = 'center';
-			ctx.fillText('\u25bc more', w / 2, listBottom + 14);
-		}
-	}
+	} else {
+		// Community sub-tab: shared button spec + a simple name/Load list.
+		const btnLayout = buildButtonLayout(COMMUNITY_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 44, minWidth: 100, gap: 8 });
+		scenePanelButtonBoxes = btnLayout.boxes;
+		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 15 });
 
-	// Export Combined button
-	const hasContent = loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0;
-	if (hasContent && loadedScenes.length > 0) {
-		const combY = 700, combH = 48;
-		const combGrad = ctx.createLinearGradient(12, combY, w - 12, combY + combH);
-		combGrad.addColorStop(0, '#f59e0b');
-		combGrad.addColorStop(1, '#d97706');
-		ctx.fillStyle = combGrad;
-		roundRect(ctx, 12, combY, w - 24, combH, 10);
-		ctx.fill();
-		ctx.font = 'bold 18px -apple-system, BlinkMacSystemFont, sans-serif';
-		ctx.fillStyle = '#ffffff';
-		ctx.textAlign = 'center';
-		ctx.fillText('Export Combined', w / 2, combY + combH / 2 + 6);
+		const sepY = contentTop + btnLayout.totalHeight + 8;
+		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+		ctx.fillRect(12, sepY, w - 24, 1);
+
+		const listTop = sepY + 8;
+		scenePanelListTop = listTop;
+		const itemH = 56;
+		const listBottom = h - 16;
+		const maxVisible = Math.floor((listBottom - listTop) / itemH);
+
+		if (communityScenesCache.length === 0) {
+			ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+			ctx.textAlign = 'center';
+			ctx.fillText('No community scenes yet', w / 2, listTop + 40);
+		} else {
+			for (let i = 0; i < maxVisible && i < communityScenesCache.length; i++) {
+				const cs = communityScenesCache[i];
+				const itemY = listTop + i * itemH;
+
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
+				ctx.fill();
+
+				ctx.textAlign = 'left';
+				ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
+				ctx.fillStyle = '#ffffff';
+				const nameX = 16;
+				const maxNameW = w - nameX - 80;
+				let dName = cs.name;
+				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
+				if (dName !== cs.name) dName += '\u2026';
+				ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
+
+				// "Load" pill button
+				const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
+				ctx.fillStyle = 'rgba(99, 102, 241, 0.4)';
+				roundRect(ctx, pillX, pillY, pillW, pillH, 8);
+				ctx.fill();
+				ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
+				ctx.fillStyle = '#ffffff';
+				ctx.textAlign = 'center';
+				ctx.fillText('Load', pillX + pillW / 2, pillY + pillH / 2 + 4);
+			}
+		}
 	}
 
 	ctx.textAlign = 'left';
@@ -2206,45 +2305,51 @@ function handleScenePanelHit(uv) {
 	const canvasX = uv.x * 384;
 	const canvasY = (1 - uv.y) * 768;
 
-	const btnY = 60, btnH = 50, btnGap = 8;
-	const btnW = (384 - 24 - btnGap) / 2;
-
-	// Export button
-	if (canvasY >= btnY && canvasY <= btnY + btnH && canvasX >= 12 && canvasX <= 12 + btnW) {
-		showExportModal(false);
-		return;
-	}
-	// Load button
-	if (canvasY >= btnY && canvasY <= btnY + btnH && canvasX >= 12 + btnW + btnGap) {
-		loadSceneFromServer();
+	// Sub-tabs (Scenes / Community)
+	const subTabHit = hitTestButtons(scenePanelSubTabBoxes, canvasX, canvasY);
+	if (subTabHit) {
+		handleMenuAction(subTabHit.action);
 		return;
 	}
 
-	// Scene list
-	const listTop = 128, itemH = 72, listBottom = 688;
-	const maxVisible = Math.floor((listBottom - listTop) / itemH);
-	if (canvasY >= listTop && canvasY < listTop + maxVisible * itemH) {
-		const idx = Math.floor((canvasY - listTop) / itemH) + sceneScrollOffset;
-		if (idx >= 0 && idx < loadedScenes.length) {
-			if (canvasX >= 384 - 36) {
-				// Remove
-				loadedScenes.splice(idx, 1);
-				rebuildSceneFromActive();
-				renderScenePanel();
-			} else if (canvasX < 48) {
-				// Toggle active
-				loadedScenes[idx].active = !loadedScenes[idx].active;
-				rebuildSceneFromActive();
-				renderScenePanel();
+	// Button row (shared spec - see SCENES_BUTTONS/COMMUNITY_BUTTONS/handleMenuAction)
+	const btnHit = hitTestButtons(scenePanelButtonBoxes, canvasX, canvasY);
+	if (btnHit) {
+		handleMenuAction(btnHit.action);
+		return;
+	}
+
+	if (scenePanelSubTab === 'scenes') {
+		// Scene list
+		const listTop = scenePanelListTop, itemH = 72, listBottom = 688;
+		const maxVisible = Math.floor((listBottom - listTop) / itemH);
+		if (canvasY >= listTop && canvasY < listTop + maxVisible * itemH) {
+			const idx = Math.floor((canvasY - listTop) / itemH) + sceneScrollOffset;
+			if (idx >= 0 && idx < loadedScenes.length) {
+				if (canvasX >= 384 - 36) {
+					// Remove
+					loadedScenes.splice(idx, 1);
+					rebuildSceneFromActive();
+					renderScenePanel();
+				} else if (canvasX < 48) {
+					// Toggle active
+					loadedScenes[idx].active = !loadedScenes[idx].active;
+					rebuildSceneFromActive();
+					renderScenePanel();
+				}
 			}
 			return;
 		}
-	}
 
-	// Export Combined button
-	if (canvasY >= 700 && canvasY <= 748 && canvasX >= 12 && canvasX <= 384 - 12) {
-		if ((loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0) && loadedScenes.length > 0) {
-			showExportModal(true);
+		// Export Combined button
+		const combHit = hitTestButtons(buildButtonLayout(EXPORT_COMBINED_BUTTON, { width: 384 - 24, x: 12, y: 700, height: 48, perRow: 1 }).boxes, canvasX, canvasY);
+		if (combHit) handleMenuAction(combHit.action);
+	} else {
+		// Community list - each row is name + a "Load" pill, see renderScenePanel
+		const listTop = scenePanelListTop, itemH = 56;
+		const idx = Math.floor((canvasY - listTop) / itemH);
+		if (canvasY >= listTop && idx >= 0 && idx < communityScenesCache.length) {
+			loadCommunityScene(communityScenesCache[idx]);
 		}
 	}
 }
@@ -3310,18 +3415,10 @@ document.querySelectorAll('.dchat-tab').forEach(tab => {
 	});
 });
 
-// Environment tab: AR/VR toggle, color picker, brightness slider — mirrors
-// the VR-only canvas side panel (handleSidePanelHit) onto the desktop.
-dchatEnvModeAr.addEventListener('click', () => {
-	isVRMode = false;
-	applyEnvironmentMode();
-	renderSidePanel();
-});
-dchatEnvModeVr.addEventListener('click', () => {
-	isVRMode = true;
-	applyEnvironmentMode();
-	renderSidePanel();
-});
+// Environment tab: AR/VR toggle (shared button spec, see ENV_MODE_BUTTONS/
+// handleMenuAction), color picker, brightness slider. The toggle buttons
+// themselves are (re)mounted by renderDomEnv() since their active/inactive
+// styling depends on isVRMode.
 dchatColorPicker.addEventListener('input', () => {
 	const hex = dchatColorPicker.value;
 	const c = new THREE.Color(hex);
@@ -3344,19 +3441,13 @@ dchatResetCameraBtn.addEventListener('click', () => {
 	orbitControls.update();
 });
 
-// Scenes tab: export / import / load-from-server — mirrors the VR-only
-// canvas scene panel (handleScenePanelHit) onto the desktop.
-dchatExportBtn.addEventListener('click', () => showExportModal(false));
-dchatImportBtn.addEventListener('click', () => fileInput.click());
-dchatImportFolderBtn.addEventListener('click', () => folderInput.click());
-dchatLoadServerBtn.addEventListener('click', () => loadSceneFromServer());
-dchatCommunityUploadBtn.addEventListener('click', () => uploadCurrentSceneToCommunity());
-dchatCommunityRefreshBtn.addEventListener('click', () => refreshCommunityScenes());
-dchatExportCombinedBtn.addEventListener('click', () => {
-	if ((loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0) && loadedScenes.length > 0) {
-		showExportModal(true);
-	}
-});
+// Scenes / Community tabs: shared button specs (SCENES_BUTTONS,
+// EXPORT_COMBINED_BUTTON, COMMUNITY_BUTTONS) mounted once - their content
+// never changes, only EXPORT_COMBINED_BUTTON's visibility does (toggled in
+// renderDomSceneList via the .visible class on its mount div).
+mountButtonsToDOM(dchatScenesButtonsMount, SCENES_BUTTONS, { width: 384, height: 44, gap: 8, minWidth: 100, fontSize: 12 }, handleMenuAction);
+mountButtonsToDOM(dchatExportCombinedMount, EXPORT_COMBINED_BUTTON, { width: 384, height: 44, gap: 8, perRow: 1, fontSize: 13 }, handleMenuAction);
+mountButtonsToDOM(dchatCommunityButtonsMount, COMMUNITY_BUTTONS, { width: 384, height: 44, gap: 8, minWidth: 100, fontSize: 12 }, handleMenuAction);
 
 // Switches between the desktop chat window (windowed browser) and the slim
 // dom-overlay bar (AR/VR immersive session), and shows/hides the legacy 3D
@@ -3442,6 +3533,9 @@ createSidePanel();
 createScenePanel();
 createHudStatus();
 createUiToggle();
+// Populate the community list once at startup so the XR scene panel's
+// Community sub-tab has content immediately, not just after a desktop tab click.
+refreshCommunityScenes();
 
 // Start in windowed (non-XR) mode: the desktop chat window is the UI, and the
 // legacy 3D canvas panels stay hidden until an AR/VR session starts.

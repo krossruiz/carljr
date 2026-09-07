@@ -321,29 +321,9 @@
 			font-weight: 700;
 		}
 
-		#dchat-env-mode {
-			display: flex;
-			gap: 6px;
-			background: rgba(255, 255, 255, 0.06);
-			border-radius: 10px;
-			padding: 4px;
-		}
-
-		#dchat-env-mode button {
-			flex: 1;
-			border: none;
-			background: transparent;
-			color: rgba(255, 255, 255, 0.5);
-			font-weight: 700;
-			font-size: 13px;
-			padding: 8px 0;
-			border-radius: 8px;
-			cursor: pointer;
-			transition: background 0.15s, color 0.15s;
-		}
-
-		#dchat-env-mode button.active.ar { background: rgba(16, 185, 129, 0.35); color: #10b981; }
-		#dchat-env-mode button.active.vr { background: rgba(99, 102, 241, 0.35); color: #a5b4fc; }
+		/* #dchat-env-mode is populated at runtime by menuSystem.js (mountButtonsToDOM)
+		   with a live SVG - see ENV_MODE_BUTTONS in main.js. Its buttons carry
+		   their own colors via the shared button-variant system. */
 
 		.dchat-color-row { display: flex; align-items: center; gap: 10px; }
 
@@ -396,11 +376,11 @@
 		/* --- Scenes tab (export / load / manage saved scenes) --- */
 		#dchat-scenes { padding: 14px; gap: 10px; overflow: hidden; }
 
-		#dchat-scenes-buttons { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
-		#dchat-scenes-buttons .dchat-btn { flex: 1; min-width: 100px; font-size: 12px; padding: 8px 6px; }
-		#dchat-scenes-buttons .dchat-btn.export { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
-		#dchat-scenes-buttons .dchat-btn.import { background: rgba(255, 255, 255, 0.1); }
-		#dchat-scenes-buttons .dchat-btn.load { background: linear-gradient(135deg, #10b981, #059669); }
+		/* #dchat-scenes-buttons and #dchat-community-buttons are populated at
+		   runtime by menuSystem.js - see SCENES_BUTTONS/COMMUNITY_BUTTONS in
+		   main.js. flex-shrink:0 keeps them from being squashed by the
+		   scrollable list below them. */
+		#dchat-scenes-buttons, #dchat-community-buttons { flex-shrink: 0; }
 
 		#dchat-community-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; min-height: 0; margin-top: 10px; }
 		#dchat-community-list::-webkit-scrollbar { width: 8px; }
@@ -475,8 +455,8 @@
 
 		.dchat-scene-remove:hover { background: rgba(239, 68, 68, 0.4); }
 
-		#dchat-export-combined { flex-shrink: 0; background: linear-gradient(135deg, #f59e0b, #d97706); display: none; }
-		#dchat-export-combined.visible { display: block; }
+		.dchat-single-btn-mount { flex-shrink: 0; display: none; }
+		.dchat-single-btn-mount.visible { display: block; }
 
 		#desktop-chat-input-row {
 			display: flex;
@@ -922,10 +902,7 @@
 			<div id="dchat-env">
 				<div>
 					<div class="dchat-section-label" style="margin-bottom:6px">Environment</div>
-					<div id="dchat-env-mode">
-						<button id="dchat-env-ar" class="active ar">AR (passthrough)</button>
-						<button id="dchat-env-vr" class="vr">VR (color)</button>
-					</div>
+					<div id="dchat-env-mode"></div>
 				</div>
 				<div id="dchat-env-controls" class="disabled">
 					<div class="dchat-section-label" style="margin-bottom:8px">Background Color</div>
@@ -962,23 +939,15 @@
 
 		<div id="dchat-panel-scenes" class="dchat-panel">
 			<div id="dchat-scenes" style="display:flex;flex-direction:column;flex:1;min-height:0">
-				<div id="dchat-scenes-buttons">
-					<button id="dchat-export-btn" class="dchat-btn export">Export</button>
-					<button id="dchat-import-btn" class="dchat-btn import">Import File</button>
-					<button id="dchat-import-folder-btn" class="dchat-btn import">Import Folder</button>
-					<button id="dchat-load-server-btn" class="dchat-btn load">Load Saved</button>
-				</div>
+				<div id="dchat-scenes-buttons"></div>
 				<div id="dchat-scene-list"></div>
-				<button id="dchat-export-combined" class="dchat-btn">Export Combined</button>
+				<div id="dchat-export-combined-mount" class="dchat-single-btn-mount"></div>
 			</div>
 		</div>
 
 		<div id="dchat-panel-community" class="dchat-panel">
 			<div id="dchat-community" style="display:flex;flex-direction:column;flex:1;min-height:0">
-				<div id="dchat-scenes-buttons">
-					<button id="dchat-community-upload-btn" class="dchat-btn export">Upload Current Scene</button>
-					<button id="dchat-community-refresh-btn" class="dchat-btn secondary">Refresh</button>
-				</div>
+				<div id="dchat-community-buttons"></div>
 				<div id="dchat-community-list"></div>
 			</div>
 		</div>
