@@ -284,6 +284,172 @@ document.body.appendChild(
 );
 
 // ============================================================================
+// Mobile pseudo-XR: Google Cardboard (stereo + gyro) and AR-camera
+// passthrough (camera feed + gyro), for phones that can't do real OpenXR -
+// iPhone Safari has no WebXR at all, and plenty of Android browsers/devices
+// don't support immersive-vr/ar either. Neither mode gets real 6DOF
+// position tracking (no SLAM) - the gyro drives look direction and the
+// existing locomotion system (see applyLocomotionInput) drives "walking",
+// triggered here by a hold-to-walk button instead of a thumbstick/keyboard.
+// ============================================================================
+let mobileXRMode = null; // null | 'cardboard' | 'ar'
+let mobileMoveHeld = false;
+let arVideoStream = null;
+const stereoCam = new THREE.StereoCamera();
+stereoCam.eyeSep = 0.064; // average human interpupillary distance, metres
+
+const cardboardBtn = document.getElementById('cardboard-btn');
+const arCameraBtn = document.getElementById('ar-camera-btn');
+const mobileXRExitBtn = document.getElementById('mobile-xr-exit');
+const mobileXRWalkBtn = document.getElementById('mobile-xr-walk');
+const arVideoEl = document.getElementById('ar-camera-feed');
+
+const isMobileUA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+// Shows Cardboard when no OpenXR VR/AR session type is available at all, and
+// AR-camera whenever real WebXR AR isn't (which is always, on iOS).
+async function refreshMobileXRButtons() {
+	if (!isMobileUA || mobileXRMode) {
+		cardboardBtn.hidden = true;
+		arCameraBtn.hidden = true;
+		return;
+	}
+	let arOk = false, vrOk = false;
+	if ('xr' in navigator) {
+		try { arOk = await navigator.xr.isSessionSupported('immersive-ar'); } catch { /* unsupported */ }
+		try { vrOk = await navigator.xr.isSessionSupported('immersive-vr'); } catch { /* unsupported */ }
+	}
+	cardboardBtn.hidden = arOk || vrOk;
+	arCameraBtn.hidden = arOk;
+}
+refreshMobileXRButtons();
+
+// --- Device orientation → camera rotation (standard three.js algorithm) ---
+const _doZee = new THREE.Vector3(0, 0, 1);
+const _doEuler = new THREE.Euler();
+const _doQ0 = new THREE.Quaternion();
+const _doQ1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -PI/2 around X
+let _doAlpha = 0, _doBeta = 0, _doGamma = 0, _doOrient = 0;
+
+function onDeviceOrientation(e) {
+	_doAlpha = THREE.MathUtils.degToRad(e.alpha || 0);
+	_doBeta = THREE.MathUtils.degToRad(e.beta || 0);
+	_doGamma = THREE.MathUtils.degToRad(e.gamma || 0);
+}
+function onScreenOrientationChange() {
+	_doOrient = (screen.orientation && typeof screen.orientation.angle === 'number')
+		? THREE.MathUtils.degToRad(screen.orientation.angle)
+		: 0;
+}
+function updateCameraFromDeviceOrientation() {
+	_doEuler.set(_doBeta, _doAlpha, -_doGamma, 'YXZ');
+	camera.quaternion.setFromEuler(_doEuler);
+	camera.quaternion.multiply(_doQ1);
+	camera.quaternion.multiply(_doQ0.setFromAxisAngle(_doZee, -_doOrient));
+}
+
+// iOS 13+ requires an explicit user-gesture-triggered permission prompt for
+// motion/orientation events; every other platform just works.
+async function requestDeviceOrientationPermission() {
+	if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+		try {
+			return (await DeviceOrientationEvent.requestPermission()) === 'granted';
+		} catch (err) {
+			console.error('Device orientation permission error:', err);
+			return false;
+		}
+	}
+	return true;
+}
+
+async function enterMobileXRMode(mode) {
+	const granted = await requestDeviceOrientationPermission();
+	if (!granted) {
+		updateStatus('Motion access denied - needed to look around', 'error');
+		return;
+	}
+
+	if (mode === 'ar') {
+		try {
+			arVideoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+		} catch (err) {
+			updateStatus(`Camera access error: ${err.message}`, 'error');
+			return;
+		}
+		arVideoEl.srcObject = arVideoStream;
+		await arVideoEl.play().catch(() => {});
+		arVideoEl.classList.add('active');
+		// Renderer clear alpha is already 0 globally (see setClearColor at the
+		// top of this file) so the transparent canvas shows the video behind
+		// it - same trick used for real WebXR AR passthrough.
+		isVRMode = false;
+		applyEnvironmentMode();
+	} else {
+		isVRMode = true;
+		applyEnvironmentMode();
+	}
+
+	window.addEventListener('deviceorientation', onDeviceOrientation);
+	window.addEventListener('orientationchange', onScreenOrientationChange);
+	onScreenOrientationChange();
+
+	try { await document.documentElement.requestFullscreen(); } catch { /* best-effort */ }
+	if (mode === 'cardboard' && screen.orientation && screen.orientation.lock) {
+		try { await screen.orientation.lock('landscape'); } catch { /* not all browsers allow this */ }
+	}
+
+	orbitControls.enabled = false;
+	mobileXRMode = mode;
+	cardboardBtn.hidden = true;
+	arCameraBtn.hidden = true;
+	mobileXRExitBtn.hidden = false;
+	mobileXRWalkBtn.hidden = false;
+	updateStatus(mode === 'cardboard' ? 'Cardboard VR active' : 'AR mode active', 'connected');
+}
+
+function exitMobileXRMode() {
+	if (!mobileXRMode) return;
+
+	window.removeEventListener('deviceorientation', onDeviceOrientation);
+	window.removeEventListener('orientationchange', onScreenOrientationChange);
+
+	if (arVideoStream) {
+		for (const track of arVideoStream.getTracks()) track.stop();
+		arVideoStream = null;
+	}
+	arVideoEl.classList.remove('active');
+	arVideoEl.srcObject = null;
+
+	if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+	if (screen.orientation && screen.orientation.unlock) {
+		try { screen.orientation.unlock(); } catch { /* ignore */ }
+	}
+
+	orbitControls.enabled = true;
+	mobileXRMode = null;
+	mobileMoveHeld = false;
+	mobileXRExitBtn.hidden = true;
+	mobileXRWalkBtn.hidden = true;
+	isVRMode = false;
+	applyEnvironmentMode();
+	updateStatus('Ready', '');
+	refreshMobileXRButtons();
+}
+
+cardboardBtn.addEventListener('click', () => enterMobileXRMode('cardboard'));
+arCameraBtn.addEventListener('click', () => enterMobileXRMode('ar'));
+mobileXRExitBtn.addEventListener('click', exitMobileXRMode);
+
+// touchstart/touchend (mobile) and mousedown/mouseup (desktop testing) both
+// wired so this works whether it's a real touchscreen or a mouse.
+mobileXRWalkBtn.addEventListener('touchstart', (e) => { e.preventDefault(); mobileMoveHeld = true; });
+mobileXRWalkBtn.addEventListener('touchend', (e) => { e.preventDefault(); mobileMoveHeld = false; });
+mobileXRWalkBtn.addEventListener('touchcancel', (e) => { e.preventDefault(); mobileMoveHeld = false; });
+mobileXRWalkBtn.addEventListener('mousedown', () => { mobileMoveHeld = true; });
+mobileXRWalkBtn.addEventListener('mouseup', () => { mobileMoveHeld = false; });
+mobileXRWalkBtn.addEventListener('mouseleave', () => { mobileMoveHeld = false; });
+
+// ============================================================================
 // Lighting
 // ============================================================================
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -3440,6 +3606,13 @@ renderer.setAnimationLoop((time) => {
 			// Locomotion: left stick moves, right stick turns.
 			updateLocomotion(dt, session);
 		}
+	} else if (mobileXRMode) {
+		// Hide reticles - no controllers in Cardboard/AR-camera mode
+		for (const r of reticles) if (r) r.visible = false;
+		// Gyro drives look direction; the hold-to-walk button drives movement
+		// in whatever direction the phone is facing (see applyLocomotionInput).
+		updateCameraFromDeviceOrientation();
+		if (mobileMoveHeld) applyLocomotionInput(dt, camera, 0, -1, 0, 0);
 	} else {
 		// Hide reticles outside XR
 		for (const r of reticles) if (r) r.visible = false;
@@ -3456,5 +3629,20 @@ renderer.setAnimationLoop((time) => {
 		}
 	}
 
-	renderer.render(scene, camera);
+	if (mobileXRMode === 'cardboard') {
+		// Manual side-by-side stereo render (no OpenXR session to do this for us).
+		stereoCam.update(camera);
+		const w = window.innerWidth, h = window.innerHeight;
+		renderer.setScissorTest(true);
+		renderer.setScissor(0, 0, w / 2, h);
+		renderer.setViewport(0, 0, w / 2, h);
+		renderer.render(scene, stereoCam.cameraL);
+		renderer.setScissor(w / 2, 0, w / 2, h);
+		renderer.setViewport(w / 2, 0, w / 2, h);
+		renderer.render(scene, stereoCam.cameraR);
+		renderer.setScissorTest(false);
+		renderer.setViewport(0, 0, w, h);
+	} else {
+		renderer.render(scene, camera);
+	}
 });
