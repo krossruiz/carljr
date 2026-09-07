@@ -179,7 +179,7 @@ function handleMenuAction(action) {
 let messages = [];       // Full messages for API context (includes raw code blocks)
 let displayMessages = []; // Cleaned messages for canvas display
 let isLoading = false;
-let selectedBackend = null; // 'claude' | 'openai' | 'ollama' - set once /api/backends resolves
+let selectedBackend = null; // 'claude' | 'fable' | 'openai' | 'ollama' - set once /api/backends resolves
 let selectedOllamaModel = null; // e.g. 'llama3.2:latest' - set once the Ollama model list loads
 let cachedPrompts = null; // { systemPrompt, fixCodePrompt } - fetched once from /api/prompts
 

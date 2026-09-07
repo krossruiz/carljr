@@ -47,6 +47,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 function getAvailableBackends() {
 	return {
 		claude: { label: 'Claude (Sonnet 5)', available: !!CLAUDE_API_KEY },
+		fable: { label: 'Claude (Fable 5.1)', available: !!CLAUDE_API_KEY },
 		openai: { label: `OpenAI (${OPENAI_MODEL})`, available: !!OPENAI_API_KEY },
 		ollama: { label: 'Ollama (runs in your browser, local)', available: true, local: true },
 	};
@@ -193,13 +194,14 @@ Top-level \`await\` IS allowed because the function is async.
 5. Keep the original intent of the code intact.`;
 
 // Shared function: call Claude API and return parsed response
-function callClaudeAPI(systemPrompt, messages, maxTokens = 16384) {
+function callClaudeAPI(systemPrompt, messages, maxTokens = 16384, model = 'claude-sonnet-5') {
 	return new Promise((resolve, reject) => {
 		const postBody = JSON.stringify({
-			model: 'claude-sonnet-5',
+			model,
 			max_tokens: maxTokens,
-			// Thinking is on by default on Sonnet 5; disable it so content[0] stays
-			// a text block (the client reads data.content[0].text) and to keep VR latency low.
+			// Thinking is on by default on Sonnet 5/Fable 5.1; disable it so
+			// content[0] stays a text block (the client reads data.content[0].text)
+			// and to keep VR latency low.
 			thinking: { type: 'disabled' },
 			system: systemPrompt,
 			messages: messages
@@ -317,7 +319,8 @@ function callLLM(systemPrompt, messages, maxTokens = 16384, backend) {
 	}
 
 	if (!CLAUDE_API_KEY) return Promise.resolve({ error: true, status: 400, data: { error: { message: 'CLAUDE_API_KEY is not configured on the server.' } } });
-	return callClaudeAPI(systemPrompt, messages, maxTokens);
+	const model = chosen === 'fable' ? 'claude-fable-5-1' : 'claude-sonnet-5';
+	return callClaudeAPI(systemPrompt, messages, maxTokens, model);
 }
 
 // Tells the client which backends are actually usable, to populate the model dropdown.
