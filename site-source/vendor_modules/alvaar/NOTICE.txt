@@ -1,0 +1,3 @@
+AlvaAR (vendor_modules/alvaar) is licensed under GPLv3.
+Source: https://github.com/alanross/AlvaAR
+See LICENSE in this folder.

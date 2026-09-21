@@ -4,7 +4,7 @@
     {
       "src": "site-source/server.js",
       "use": "@vercel/node",
-      "config": { "includeFiles": ["site-source/index.html", "site-source/main.js", "site-source/menuSystem.js", "site-source/threejsAddons/**", "site-source/vendor_modules/**"], "maxDuration": 60 }
+      "config": { "includeFiles": ["site-source/index.html", "site-source/main.js", "site-source/menuSystem.js", "site-source/arSurfaceTracking.js", "site-source/threejsAddons/**", "site-source/vendor_modules/**"], "maxDuration": 60 }
     }
   ],
   "routes": [
