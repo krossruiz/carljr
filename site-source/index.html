@@ -1089,6 +1089,86 @@
 			pointer-events: auto;
 		}
 
+
+		/* --- Code tab (view/edit generated VR program) --- */
+		#dchat-code {
+			padding: 12px;
+			gap: 8px;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
+			flex: 1;
+			min-height: 0;
+		}
+		#dchat-code-toolbar {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 8px;
+			flex-shrink: 0;
+		}
+		#dchat-code-toolbar label {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			color: rgba(255, 255, 255, 0.7);
+			cursor: pointer;
+			user-select: none;
+		}
+		#dchat-code-toolbar input[type="checkbox"] {
+			width: 16px;
+			height: 16px;
+			accent-color: #6366f1;
+			cursor: pointer;
+		}
+		#dchat-code-toolbar .dchat-btn {
+			padding: 6px 12px;
+			font-size: 12px;
+		}
+		#dchat-code-status {
+			font-size: 11px;
+			color: rgba(255, 255, 255, 0.45);
+			flex: 1;
+			min-width: 80px;
+			text-align: right;
+		}
+		#dchat-code-status.ok { color: #34d399; }
+		#dchat-code-status.error { color: #f87171; }
+		#dchat-code-status.pending { color: #a5b4fc; }
+		#dchat-code-hint {
+			font-size: 11px;
+			color: rgba(255, 255, 255, 0.35);
+			flex-shrink: 0;
+			line-height: 1.35;
+		}
+		#dchat-code-editor {
+			flex: 1;
+			min-height: 0;
+			width: 100%;
+			box-sizing: border-box;
+			resize: none;
+			border: 1px solid rgba(255, 255, 255, 0.1);
+			border-radius: 10px;
+			background: rgba(0, 0, 0, 0.35);
+			color: #e2e8f0;
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+			font-size: 12px;
+			line-height: 1.45;
+			padding: 10px 12px;
+			outline: none;
+			tab-size: 2;
+		}
+		#dchat-code-editor:focus {
+			border-color: rgba(99, 102, 241, 0.55);
+			background: rgba(0, 0, 0, 0.45);
+		}
+		#dchat-code-editor::-webkit-scrollbar { width: 8px; }
+		#dchat-code-editor::-webkit-scrollbar-thumb {
+			background: rgba(255, 255, 255, 0.15);
+			border-radius: 4px;
+		}
+
 		/* Display-only / exported share view: hide editor chrome */
 		body.display-only #desktop-chat,
 		body.display-only #desktop-chat-reopen,
@@ -1217,6 +1297,7 @@
 			<button class="dchat-tab active" data-tab="chat">💬 Chat</button>
 			<button class="dchat-tab" data-tab="env">🎨 Environment</button>
 			<button class="dchat-tab" data-tab="scenes">📁 Scenes</button>
+			<button class="dchat-tab" data-tab="code">📝 Code</button>
 			<button class="dchat-tab" data-tab="community">🌐 Community</button>
 		</div>
 
@@ -1284,6 +1365,23 @@
 				<div id="dchat-scenes-buttons"></div>
 				<div id="dchat-scene-list"></div>
 				<div id="dchat-export-combined-mount" class="dchat-single-btn-mount"></div>
+			</div>
+		</div>
+
+
+		<div id="dchat-panel-code" class="dchat-panel">
+			<div id="dchat-code">
+				<div id="dchat-code-toolbar">
+					<label title="Re-apply edits to the 3D scene as you type (debounced)">
+						<input type="checkbox" id="dchat-code-live" />
+						Live updates
+					</label>
+					<button type="button" id="dchat-code-apply" class="dchat-btn accent">Apply</button>
+					<button type="button" id="dchat-code-revert" class="dchat-btn secondary">Revert</button>
+					<span id="dchat-code-status"></span>
+				</div>
+				<div id="dchat-code-hint">Generated VR program (active scenes + session blocks). Edit and Apply to rebuild the scene.</div>
+				<textarea id="dchat-code-editor" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="// vr-exec blocks appear here after chat generates them…"></textarea>
 			</div>
 		</div>
 

@@ -95,6 +95,13 @@ const dchatThemesList = document.getElementById('dchat-themes-list');
 const dchatThemeChatMessages = document.getElementById('dchat-theme-chat-messages');
 const dchatThemeChatInput = document.getElementById('dchat-theme-chat-input');
 const dchatThemeChatSend = document.getElementById('dchat-theme-chat-send');
+const dchatCodeEditor = document.getElementById('dchat-code-editor');
+const dchatCodeLive = document.getElementById('dchat-code-live');
+const dchatCodeApply = document.getElementById('dchat-code-apply');
+const dchatCodeRevert = document.getElementById('dchat-code-revert');
+const dchatCodeStatus = document.getElementById('dchat-code-status');
+const dchatCodeHint = document.getElementById('dchat-code-hint');
+
 
 // ============================================================================
 // Shared menu button specs (menuSystem.js) — the single source of truth for
@@ -357,6 +364,12 @@ let communityScenesCache = []; // last-fetched list, so the XR panel has somethi
 let communityThemesCache = [];
 let communitySection = 'scenes'; // desktop Community tab: 'scenes' | 'themes'
 let displayOnlyMode = false; // share URL opened with editor chrome stripped
+let codeEditorDirty = false; // user has unsaved edits in Code tab
+let codeEditorApplying = false;
+let codeEditorLiveTimer = null;
+let codeEditorLastApplied = ''; // last successfully applied / synced source
+const CODE_EDITOR_LIVE_DEBOUNCE_MS = 500;
+
 let pendingRename = null;
 let pendingRenameKind = 'scene'; // 'scene' | 'theme'
 let currentTheme = null; // last applied theme object { name, cssVars, customCSS }
@@ -1747,6 +1760,162 @@ function disposeRecursive(obj) {
 	}
 }
 
+
+// ============================================================================
+// Code tab — view/edit generated VR program (active scenes + session blocks)
+// ============================================================================
+function setCodeEditorStatus(text, kind) {
+	if (!dchatCodeStatus) return;
+	dchatCodeStatus.textContent = text || '';
+	dchatCodeStatus.className = kind || '';
+}
+
+function buildCodeEditorSource() {
+	const chunks = [];
+	for (const sc of loadedScenes) {
+		if (!sc.active) continue;
+		(sc.codeBlocks || []).forEach((code, i) => {
+			const name = String(sc.name || 'Scene').replace(/\n/g, ' ');
+			chunks.push(`// --- scene[${sc.id}] #${i} ${name} ---\n${String(code).trim()}`);
+		});
+	}
+	executedCodeBlocks.forEach((code, i) => {
+		chunks.push(`// --- block ${i} ---\n${String(code).trim()}`);
+	});
+	return chunks.join('\n\n');
+}
+
+function parseCodeEditorSource(text) {
+	const sceneUpdates = new Map(); // sceneId -> code[]
+	const sessionBlocks = [];
+	const trimmed = (text || '').trim();
+	if (!trimmed) return { sceneUpdates, sessionBlocks };
+
+	const parts = trimmed.split(/(?=^\/\/ --- .+? ---$)/m);
+	for (const part of parts) {
+		const m = part.match(/^\/\/ --- (.+?) ---\r?\n?([\s\S]*)$/);
+		if (!m) {
+			const orphan = part.trim();
+			if (orphan) sessionBlocks.push(orphan);
+			continue;
+		}
+		const label = m[1].trim();
+		const code = (m[2] || '').trim();
+		if (!code) continue;
+		const sceneMatch = label.match(/^scene\[([^\]]+)\]/);
+		if (sceneMatch) {
+			const id = sceneMatch[1];
+			if (!sceneUpdates.has(id)) sceneUpdates.set(id, []);
+			sceneUpdates.get(id).push(code);
+		} else {
+			sessionBlocks.push(code);
+		}
+	}
+	return { sceneUpdates, sessionBlocks };
+}
+
+function updateCodeEditorHint() {
+	if (!dchatCodeHint) return;
+	const sceneCount = loadedScenes.filter(s => s.active).reduce((n, s) => n + (s.codeBlocks?.length || 0), 0);
+	const sessionCount = executedCodeBlocks.length;
+	dchatCodeHint.textContent =
+		`Active scenes: ${sceneCount} block${sceneCount === 1 ? '' : 's'} · Session: ${sessionCount} block${sessionCount === 1 ? '' : 's'}. ` +
+		`Markers like // --- block N --- separate blocks on Apply.`;
+}
+
+function syncCodeEditorFromState({ force = false } = {}) {
+	if (!dchatCodeEditor) return;
+	if (codeEditorDirty && !force) return;
+	const src = buildCodeEditorSource();
+	dchatCodeEditor.value = src;
+	codeEditorLastApplied = src;
+	codeEditorDirty = false;
+	updateCodeEditorHint();
+	if (!codeEditorApplying) setCodeEditorStatus(src ? 'Synced' : 'Empty', '');
+}
+
+function notifyCodeEditorExternalChange() {
+	// Refresh when chat/scenes change, unless the user is mid-edit.
+	syncCodeEditorFromState({ force: false });
+	updateCodeEditorHint();
+}
+
+function markCodeEditorDirty() {
+	codeEditorDirty = true;
+	setCodeEditorStatus('Edited', 'pending');
+	if (dchatCodeLive && dchatCodeLive.checked) scheduleLiveCodeApply();
+}
+
+function scheduleLiveCodeApply() {
+	if (codeEditorLiveTimer) clearTimeout(codeEditorLiveTimer);
+	codeEditorLiveTimer = setTimeout(() => {
+		codeEditorLiveTimer = null;
+		applyCodeFromEditor({ fromLive: true });
+	}, CODE_EDITOR_LIVE_DEBOUNCE_MS);
+}
+
+async function applyCodeFromEditor({ fromLive = false } = {}) {
+	if (!dchatCodeEditor || codeEditorApplying) return;
+	codeEditorApplying = true;
+	setCodeEditorStatus(fromLive ? 'Live applying…' : 'Applying…', 'pending');
+	if (dchatCodeApply) dchatCodeApply.disabled = true;
+	try {
+		const text = dchatCodeEditor.value;
+		const { sceneUpdates, sessionBlocks } = parseCodeEditorSource(text);
+
+		for (const [id, codes] of sceneUpdates) {
+			const sc = loadedScenes.find(s => s.id === id);
+			if (sc) sc.codeBlocks = codes;
+		}
+		executedCodeBlocks = sessionBlocks;
+
+		clearUserObjects();
+		for (const sc of loadedScenes) {
+			if (!sc.active) continue;
+			for (const code of sc.codeBlocks || []) {
+				await executeVrCode(code);
+			}
+		}
+		for (const code of executedCodeBlocks) {
+			await executeVrCode(code);
+		}
+
+		const normalized = buildCodeEditorSource();
+		codeEditorLastApplied = normalized;
+		// Keep caret-friendly: only rewrite textarea if markers/order changed meaningfully
+		if (!codeEditorDirty || dchatCodeEditor.value.trim() === text.trim()) {
+			dchatCodeEditor.value = normalized;
+			codeEditorDirty = false;
+		} else {
+			codeEditorDirty = false;
+		}
+		updateCodeEditorHint();
+		setCodeEditorStatus(fromLive ? 'Live applied' : 'Applied', 'ok');
+		renderScenePanel();
+	} catch (err) {
+		console.error('Code editor apply error:', err);
+		setCodeEditorStatus(`Error: ${err?.message || err}`, 'error');
+		// Don't crash the app; scene may be partially rebuilt — leave editor dirty
+		codeEditorDirty = true;
+	} finally {
+		codeEditorApplying = false;
+		if (dchatCodeApply) dchatCodeApply.disabled = false;
+	}
+}
+
+function revertCodeEditor() {
+	if (!dchatCodeEditor) return;
+	if (codeEditorLiveTimer) {
+		clearTimeout(codeEditorLiveTimer);
+		codeEditorLiveTimer = null;
+	}
+	const src = codeEditorLastApplied || buildCodeEditorSource();
+	dchatCodeEditor.value = src;
+	codeEditorDirty = false;
+	updateCodeEditorHint();
+	setCodeEditorStatus('Reverted', '');
+}
+
 function clearUserObjects() {
 	for (let i = scene.children.length - 1; i >= 0; i--) {
 		const child = scene.children[i];
@@ -1892,6 +2061,7 @@ function addLoadedScene(data, fallbackName) {
 
 	loadSceneThumbnails();
 	renderScenePanel();
+	notifyCodeEditorExternalChange();
 	return sc;
 }
 
@@ -2634,6 +2804,7 @@ function renderDomSceneList() {
 				sc.active = checkbox.checked;
 				rebuildSceneFromActive();
 				renderScenePanel();
+				notifyCodeEditorExternalChange();
 			});
 
 			const thumb = document.createElement('img');
@@ -2653,6 +2824,7 @@ function renderDomSceneList() {
 				loadedScenes.splice(i, 1);
 				rebuildSceneFromActive();
 				renderScenePanel();
+				notifyCodeEditorExternalChange();
 			});
 
 			item.append(checkbox, thumb, name, remove);
@@ -2961,11 +3133,13 @@ function handleScenePanelHit(uv) {
 					loadedScenes.splice(idx, 1);
 					rebuildSceneFromActive();
 					renderScenePanel();
+					notifyCodeEditorExternalChange();
 				} else if (canvasX < 48) {
 					// Toggle active
 					loadedScenes[idx].active = !loadedScenes[idx].active;
 					rebuildSceneFromActive();
 					renderScenePanel();
+					notifyCodeEditorExternalChange();
 				}
 			}
 			return;
@@ -3550,6 +3724,7 @@ async function sendMessage(userMessage) {
 			if (execCount > 0) {
 				const fixNote = fixCount > 0 ? ` (${fixCount} auto-fixed)` : '';
 				updateStatus(`Connected — ran ${execCount} block${execCount > 1 ? 's' : ''}${fixNote}`, 'connected');
+				notifyCodeEditorExternalChange();
 			} else {
 				updateStatus('Connected', 'connected');
 			}
@@ -4195,7 +4370,7 @@ document.addEventListener('keydown', (e) => {
 	desktopChat.style.top = `${top}px`;
 });
 
-// Tabs: Chat / Environment / Scenes / Community (Scenes|Themes sections).
+// Tabs: Chat / Environment / Scenes / Code / Community (Scenes|Themes sections).
 document.querySelectorAll('.dchat-tab').forEach(tab => {
 	tab.addEventListener('click', () => {
 		document.querySelectorAll('.dchat-tab').forEach(t => t.classList.remove('active'));
@@ -4203,8 +4378,35 @@ document.querySelectorAll('.dchat-tab').forEach(tab => {
 		tab.classList.add('active');
 		document.getElementById(`dchat-panel-${tab.dataset.tab}`).classList.add('active');
 		if (tab.dataset.tab === 'community') setCommunitySection(communitySection);
+		if (tab.dataset.tab === 'code') syncCodeEditorFromState({ force: false });
 	});
 });
+
+// Code tab: edit generated VR program with optional live re-apply.
+if (dchatCodeEditor) {
+	dchatCodeEditor.addEventListener('input', markCodeEditorDirty);
+	dchatCodeEditor.addEventListener('keydown', (e) => {
+		// Keep Tab inserting spaces inside the editor instead of leaving the field.
+		if (e.key === 'Tab') {
+			e.preventDefault();
+			const start = dchatCodeEditor.selectionStart;
+			const end = dchatCodeEditor.selectionEnd;
+			const v = dchatCodeEditor.value;
+			dchatCodeEditor.value = v.slice(0, start) + '	' + v.slice(end);
+			dchatCodeEditor.selectionStart = dchatCodeEditor.selectionEnd = start + 1;
+			markCodeEditorDirty();
+		}
+	});
+}
+if (dchatCodeApply) dchatCodeApply.addEventListener('click', () => applyCodeFromEditor());
+if (dchatCodeRevert) dchatCodeRevert.addEventListener('click', revertCodeEditor);
+if (dchatCodeLive) {
+	dchatCodeLive.checked = false; // default OFF for safety
+	dchatCodeLive.addEventListener('change', () => {
+		if (dchatCodeLive.checked && codeEditorDirty) scheduleLiveCodeApply();
+	});
+}
+syncCodeEditorFromState({ force: true });
 
 document.querySelectorAll('.dchat-subtab').forEach(btn => {
 	btn.addEventListener('click', () => setCommunitySection(btn.dataset.communitySection));
