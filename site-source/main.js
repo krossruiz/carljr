@@ -63,7 +63,7 @@ arTransformControls.enabled = false;
 arTransformControls.setMode('translate');
 arTransformControls.setSize(1.35);
 arTransformControls.space = 'world';
-arTransformControls.showY = false; // keep Move on the ground plane by default
+arTransformControls.showY = true; // Move includes up/down (Y) as well as XZ
 let arGizmoVisible = false;
 let arGizmoDragging = false;
 arTransformControls.addEventListener('dragging-changed', (e) => {
@@ -704,7 +704,7 @@ function setArGizmoMode(mode) {
 	arTransformControls.setMode(m);
 	if (m === 'translate') {
 		arTransformControls.showX = true;
-		arTransformControls.showY = false;
+		arTransformControls.showY = true;
 		arTransformControls.showZ = true;
 	} else if (m === 'rotate') {
 		arTransformControls.showX = false;
