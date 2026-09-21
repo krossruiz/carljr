@@ -87,6 +87,7 @@ const desktopModelSelect = document.getElementById('desktop-model-select');
 const desktopOllamaModelRow = document.getElementById('desktop-ollama-model-row');
 const desktopOllamaModelSelect = document.getElementById('desktop-ollama-model-select');
 const desktopChatMinimizeBtn = document.getElementById('desktop-chat-minimize');
+const desktopChatExpandBtn = document.getElementById('desktop-chat-expand');
 const desktopChatReopenBtn = document.getElementById('desktop-chat-reopen');
 const chatOverlayBar = document.getElementById('chat-overlay');
 const dchatEnvModeMount = document.getElementById('dchat-env-mode');
@@ -226,6 +227,33 @@ let messages = [];       // Full messages for API context (includes raw code blo
 let displayMessages = []; // Cleaned messages for canvas display
 let isLoading = false;
 let selectedBackend = null; // 'claude' | 'fable' | 'openai' | 'ollama' - set once /api/backends resolves
+let backendLabels = {}; // id -> display label from /api/backends
+
+/** Human-readable name for the currently selected model/provider. */
+function getActiveModelDisplayName() {
+	if (selectedBackend === 'ollama') {
+		const name = selectedOllamaModel || desktopOllamaModelSelect?.value;
+		if (name && !/^Checking|^No local|^Could not/.test(name)) return name;
+		return 'Ollama';
+	}
+	const fromMap = backendLabels[selectedBackend];
+	if (fromMap) return fromMap;
+	const opt = desktopModelSelect?.selectedOptions?.[0];
+	if (opt?.textContent) {
+		return opt.textContent.split('—')[0].trim() || 'Assistant';
+	}
+	const fallbacks = {
+		claude: 'Claude',
+		fable: 'Claude Fable',
+		openai: 'GPT6 Astra',
+		ollama: 'Ollama'
+	};
+	return fallbacks[selectedBackend] || 'Assistant';
+}
+
+function thinkingStatusText() {
+	return `${getActiveModelDisplayName()} is thinking...`;
+}
 let selectedOllamaModel = null; // e.g. 'llama3.2:latest' - set once the Ollama model list loads
 let cachedPrompts = null; // { systemPrompt, fixCodePrompt, themePrompt } - fetched once from /api/prompts
 let pendingAttachments = []; // files staged via the 📎 / Files picker, sent with the next scene message - see buildUserContent()
@@ -697,7 +725,7 @@ function renderChatToCanvas() {
 
 	if (isLoading) {
 		allLines.push({
-			text: 'Claude is thinking...',
+			text: thinkingStatusText(),
 			color: '#8b5cf6',
 			font: `italic ${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
 			heightScale: 1.0
@@ -797,7 +825,7 @@ function renderDomChat() {
 	if (isLoading) {
 		const thinking = document.createElement('div');
 		thinking.className = 'dchat-msg thinking';
-		thinking.textContent = 'Claude is thinking...';
+		thinking.textContent = thinkingStatusText();
 		desktopChatMessages.appendChild(thinking);
 	}
 	desktopChatMessages.scrollTop = desktopChatMessages.scrollHeight;
@@ -2737,7 +2765,7 @@ async function sendThemeChat() {
 	appendThemeChatBubble('user', bubbleLabel || '(attached files)');
 	themeChatLoading = true;
 	if (dchatThemeChatSend) dchatThemeChatSend.disabled = true;
-	appendThemeChatBubble('system', 'Thinking...');
+	appendThemeChatBubble('system', thinkingStatusText());
 	try {
 		let data;
 		if (selectedBackend === 'ollama') {
@@ -4050,7 +4078,7 @@ async function sendMessage(userMessage) {
 	});
 	chatScrollOffset = 0; // auto-scroll to bottom on new message
 
-	// Set loading state BEFORE rendering so the "Claude is thinking..." indicator
+	// Set loading state BEFORE rendering so the model-aware thinking indicator
 	// is drawn immediately — otherwise it only appears on the next render (which
 	// previously required a click/interaction to trigger).
 	isLoading = true;
@@ -4577,7 +4605,9 @@ async function initModelSelect() {
 		// on OLLAMA_UNAVAILABLE_HOSTED_MSG above. That's a client-side fact
 		// the server can't know, so it's applied on top of `available` here.
 		desktopModelSelect.innerHTML = '';
+		backendLabels = {};
 		for (const [id, info] of Object.entries(backends)) {
+			backendLabels[id] = info.label || id;
 			const usable = info.available && (!info.local || IS_LOCAL_PAGE);
 			const opt = document.createElement('option');
 			opt.value = id;
@@ -4672,11 +4702,82 @@ if (desktopChatMinimizeBtn) {
 if (desktopChatReopenBtn) {
 	desktopChatReopenBtn.addEventListener('click', () => setDesktopChatMinimized(false));
 }
+if (desktopChatExpandBtn) {
+	desktopChatExpandBtn.addEventListener('click', () => toggleDesktopChatExpanded());
+}
+
+const CHAT_SIZE_KEY = 'carljr-chat-window';
+let _chatSizeBeforeExpand = null;
 
 function setDesktopChatMinimized(minimized) {
 	desktopChat.classList.toggle('hidden', minimized);
 	if (desktopChatReopenBtn) desktopChatReopenBtn.classList.toggle('visible', minimized);
 }
+
+function saveDesktopChatSize() {
+	if (desktopChat.classList.contains('expanded')) return;
+	try {
+		const rect = desktopChat.getBoundingClientRect();
+		localStorage.setItem(CHAT_SIZE_KEY, JSON.stringify({
+			left: rect.left,
+			top: rect.top,
+			width: rect.width,
+			height: rect.height
+		}));
+	} catch { /* ignore */ }
+}
+
+function restoreDesktopChatSize() {
+	try {
+		const raw = localStorage.getItem(CHAT_SIZE_KEY);
+		if (!raw) return;
+		const s = JSON.parse(raw);
+		if (!s || !s.width || !s.height) return;
+		const w = Math.max(280, Math.min(window.innerWidth - 16, s.width));
+		const h = Math.max(220, Math.min(window.innerHeight - 16, s.height));
+		const left = Math.max(0, Math.min(window.innerWidth - w, s.left ?? 24));
+		const top = Math.max(0, Math.min(window.innerHeight - h, s.top ?? 80));
+		desktopChat.style.width = `${w}px`;
+		desktopChat.style.height = `${h}px`;
+		desktopChat.style.left = `${left}px`;
+		desktopChat.style.top = `${top}px`;
+	} catch { /* ignore */ }
+}
+
+function toggleDesktopChatExpanded() {
+	const expanding = !desktopChat.classList.contains('expanded');
+	if (expanding) {
+		const rect = desktopChat.getBoundingClientRect();
+		_chatSizeBeforeExpand = {
+			left: rect.left,
+			top: rect.top,
+			width: rect.width,
+			height: rect.height
+		};
+		desktopChat.classList.add('expanded');
+		if (desktopChatExpandBtn) {
+			desktopChatExpandBtn.title = 'Restore window';
+			desktopChatExpandBtn.innerHTML = '&#x2750;';
+		}
+	} else {
+		desktopChat.classList.remove('expanded');
+		const s = _chatSizeBeforeExpand;
+		if (s) {
+			desktopChat.style.width = `${s.width}px`;
+			desktopChat.style.height = `${s.height}px`;
+			desktopChat.style.left = `${s.left}px`;
+			desktopChat.style.top = `${s.top}px`;
+		}
+		_chatSizeBeforeExpand = null;
+		if (desktopChatExpandBtn) {
+			desktopChatExpandBtn.title = 'Expand window';
+			desktopChatExpandBtn.innerHTML = '&#x26F6;';
+		}
+		saveDesktopChatSize();
+	}
+}
+
+restoreDesktopChatSize();
 
 // Dragging via the header. Uses document-level mouse listeners (rather than
 // pointer capture) so it keeps tracking even if the cursor briefly leaves the
@@ -4722,34 +4823,37 @@ function setDesktopChatMinimized(minimized) {
 	let resizing = false;
 	let dir = '';
 	let startX = 0, startY = 0, startWidth = 0, startHeight = 0, startLeft = 0, startTop = 0;
+	let activePointerId = null;
 
-	document.querySelectorAll('.dchat-resize').forEach(handle => {
-		handle.addEventListener('mousedown', (e) => {
-			resizing = true;
-			dir = handle.dataset.dir;
-			desktopChat.classList.add('resizing');
-			const rect = desktopChat.getBoundingClientRect();
-			startX = e.clientX;
-			startY = e.clientY;
-			startWidth = rect.width;
-			startHeight = rect.height;
-			startLeft = rect.left;
-			startTop = rect.top;
-			e.preventDefault();
-		});
-	});
+	function onPointerDown(e) {
+		if (desktopChat.classList.contains('expanded')) return;
+		resizing = true;
+		dir = e.currentTarget.dataset.dir;
+		activePointerId = e.pointerId;
+		desktopChat.classList.add('resizing');
+		const rect = desktopChat.getBoundingClientRect();
+		startX = e.clientX;
+		startY = e.clientY;
+		startWidth = rect.width;
+		startHeight = rect.height;
+		startLeft = rect.left;
+		startTop = rect.top;
+		try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+		e.preventDefault();
+	}
 
-	document.addEventListener('mousemove', (e) => {
+	function onPointerMove(e) {
 		if (!resizing) return;
+		if (activePointerId != null && e.pointerId !== activePointerId) return;
 		const dx = e.clientX - startX;
 		const dy = e.clientY - startY;
 
 		if (dir.includes('e')) {
-			const newWidth = Math.max(MIN_W, Math.min(window.innerWidth - startLeft, startWidth + dx));
+			const newWidth = Math.max(MIN_W, Math.min(window.innerWidth - startLeft - 8, startWidth + dx));
 			desktopChat.style.width = `${newWidth}px`;
 		}
 		if (dir.includes('s')) {
-			const newHeight = Math.max(MIN_H, Math.min(window.innerHeight - startTop, startHeight + dy));
+			const newHeight = Math.max(MIN_H, Math.min(window.innerHeight - startTop - 8, startHeight + dy));
 			desktopChat.style.height = `${newHeight}px`;
 		}
 		if (dir.includes('w')) {
@@ -4766,13 +4870,23 @@ function setDesktopChatMinimized(minimized) {
 			desktopChat.style.height = `${startHeight - clampedDy}px`;
 			desktopChat.style.top = `${startTop + clampedDy}px`;
 		}
-	});
+	}
 
-	document.addEventListener('mouseup', () => {
+	function onPointerUp(e) {
 		if (!resizing) return;
+		if (activePointerId != null && e.pointerId !== activePointerId) return;
 		resizing = false;
 		dir = '';
+		activePointerId = null;
 		desktopChat.classList.remove('resizing');
+		saveDesktopChatSize();
+	}
+
+	document.querySelectorAll('.dchat-resize').forEach(handle => {
+		handle.addEventListener('pointerdown', onPointerDown);
+		handle.addEventListener('pointermove', onPointerMove);
+		handle.addEventListener('pointerup', onPointerUp);
+		handle.addEventListener('pointercancel', onPointerUp);
 	});
 })();
 

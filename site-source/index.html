@@ -219,8 +219,8 @@
 			height: 520px;
 			min-width: 280px;
 			min-height: 220px;
-			max-width: calc(100vw - 24px);
-			max-height: calc(100vh - 24px);
+			max-width: calc(100vw - 16px);
+			max-height: calc(100vh - 16px);
 			display: flex;
 			flex-direction: column;
 			background: var(--dchat-bg);
@@ -229,7 +229,8 @@
 			box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
 			backdrop-filter: blur(18px);
 			-webkit-backdrop-filter: blur(18px);
-			overflow: hidden;
+			/* visible so edge/corner resize handles outside the box stay clickable */
+			overflow: visible;
 			z-index: 1000;
 			pointer-events: auto;
 			color: var(--dchat-text);
@@ -287,8 +288,16 @@
 			color: var(--dchat-tab-active-color);
 		}
 
-		.dchat-panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
+		.dchat-panel { display: none; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; border-radius: 0 0 var(--dchat-radius) var(--dchat-radius); }
 		.dchat-panel.active { display: flex; }
+		#desktop-chat.expanded {
+			top: 12px !important;
+			left: 12px !important;
+			width: calc(100vw - 24px) !important;
+			height: calc(100vh - 24px) !important;
+			max-width: none;
+			max-height: none;
+		}
 
 		#desktop-model-row {
 			display: flex; align-items: center; gap: 8px;
@@ -781,27 +790,34 @@
 		/* Edge/corner resize handles — hold and drag any side or corner. */
 		.dchat-resize {
 			position: absolute;
-			z-index: 5;
+			z-index: 20;
+			-webkit-user-select: none;
+			user-select: none;
+			touch-action: none;
 		}
+		#desktop-chat.expanded .dchat-resize { pointer-events: none; opacity: 0; }
 
-		.dchat-resize.edge-n, .dchat-resize.edge-s { left: 10px; right: 10px; height: 8px; cursor: ns-resize; }
-		.dchat-resize.edge-n { top: -4px; }
-		.dchat-resize.edge-s { bottom: -4px; }
+		.dchat-resize.edge-n, .dchat-resize.edge-s { left: 14px; right: 14px; height: 12px; cursor: ns-resize; }
+		.dchat-resize.edge-n { top: -6px; }
+		.dchat-resize.edge-s { bottom: -6px; }
 
-		.dchat-resize.edge-e, .dchat-resize.edge-w { top: 10px; bottom: 10px; width: 8px; cursor: ew-resize; }
-		.dchat-resize.edge-e { right: -4px; }
-		.dchat-resize.edge-w { left: -4px; }
+		.dchat-resize.edge-e, .dchat-resize.edge-w { top: 14px; bottom: 14px; width: 12px; cursor: ew-resize; }
+		.dchat-resize.edge-e { right: -6px; }
+		.dchat-resize.edge-w { left: -6px; }
 
-		.dchat-resize.corner { width: 16px; height: 16px; }
-		.dchat-resize.corner-nw { top: -4px; left: -4px; cursor: nwse-resize; }
-		.dchat-resize.corner-ne { top: -4px; right: -4px; cursor: nesw-resize; }
-		.dchat-resize.corner-sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
+		.dchat-resize.corner { width: 22px; height: 22px; }
+		.dchat-resize.corner-nw { top: -6px; left: -6px; cursor: nwse-resize; }
+		.dchat-resize.corner-ne { top: -6px; right: -6px; cursor: nesw-resize; }
+		.dchat-resize.corner-sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
 		.dchat-resize.corner-se {
-			bottom: 0;
-			right: 0;
+			bottom: 2px;
+			right: 2px;
+			width: 28px;
+			height: 28px;
 			cursor: nwse-resize;
+			border-radius: 0 0 var(--dchat-radius) 0;
 			background:
-				linear-gradient(135deg, transparent 0%, transparent 45%, rgba(255,255,255,0.35) 45%, rgba(255,255,255,0.35) 55%, transparent 55%, transparent 65%, rgba(255,255,255,0.35) 65%, rgba(255,255,255,0.35) 75%, transparent 75%);
+				linear-gradient(135deg, transparent 0%, transparent 45%, rgba(255,255,255,0.45) 45%, rgba(255,255,255,0.45) 55%, transparent 55%, transparent 65%, rgba(255,255,255,0.45) 65%, rgba(255,255,255,0.45) 75%, transparent 75%);
 		}
 
 		#desktop-chat-reopen {
@@ -1510,6 +1526,7 @@
 		<div id="desktop-chat-header">
 			<div id="desktop-chat-title"><span class="dot"></span>Claude</div>
 			<div id="desktop-chat-header-buttons">
+				<button id="desktop-chat-expand" title="Expand window" aria-label="Expand window">&#x26F6;</button>
 				<button id="desktop-chat-minimize" title="Minimize">&#95;</button>
 			</div>
 		</div>
