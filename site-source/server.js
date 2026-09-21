@@ -356,7 +356,7 @@ app.get('/api/backends', (req, res) => {
 // (bypassing this server entirely) so there's still one source of truth for
 // them instead of a duplicated copy baked into main.js.
 app.get('/api/prompts', (req, res) => {
-	res.json({ systemPrompt: SYSTEM_PROMPT, fixCodePrompt: FIX_CODE_PROMPT });
+	res.json({ systemPrompt: SYSTEM_PROMPT, fixCodePrompt: FIX_CODE_PROMPT, themePrompt: THEME_SYSTEM_PROMPT });
 });
 
 // Proxy endpoint for the LLM chat backends
@@ -426,6 +426,66 @@ app.post('/api/fix-code', async (req, res) => {
 
 	} catch (error) {
 		console.error('Fix-code error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+
+// Theme restyle assistant: edits desktop/editor chrome only (not the 3D scene).
+const THEME_SYSTEM_PROMPT = `You restyle the Carl Jr / Claude VR desktop editor chrome (#desktop-chat and related overlay UI). You do NOT change the Three.js 3D scene content.
+
+## Goal
+When the user asks for a look (colors, fonts, panel feel), return a theme they can apply live.
+
+## Output format (required)
+Always include ONE fenced JSON block tagged theme-json:
+
+\`\`\`theme-json
+{
+  "name": "Short theme name",
+  "cssVars": {
+    "--dchat-bg": "rgba(22, 22, 32, 0.9)",
+    "--dchat-border": "rgba(255,255,255,0.1)",
+    "--dchat-text": "#ffffff",
+    "--dchat-text-muted": "rgba(255,255,255,0.55)",
+    "--dchat-header-bg": "linear-gradient(135deg, rgba(99,102,241,0.45), rgba(139,92,246,0.3))",
+    "--dchat-tabs-bg": "rgba(255,255,255,0.03)",
+    "--dchat-tab-color": "rgba(255,255,255,0.5)",
+    "--dchat-tab-active-bg": "rgba(255,255,255,0.1)",
+    "--dchat-tab-active-color": "#ffffff",
+    "--dchat-input-bg": "rgba(255,255,255,0.1)",
+    "--dchat-accent": "#8b5cf6",
+    "--dchat-accent-2": "#6366f1",
+    "--dchat-radius": "18px",
+    "--dchat-font": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
+  },
+  "customCSS": "/* optional extra rules scoped under #desktop-chat */"
+}
+\`\`\`
+
+## Rules
+- Only style editor chrome (chat window, tabs, inputs, buttons). Never invent vr-exec or scene code.
+- Prefer cssVars over customCSS. If you use customCSS, scope selectors under #desktop-chat.
+- Keep text readable (strong contrast). Do not set opacity so low that UI becomes illegible.
+- You may briefly explain the look in plain text outside the fence.
+- If the user asks to reset, return cssVars matching a clean dark indigo default.
+`;
+
+app.post('/api/theme-chat', async (req, res) => {
+	try {
+		const { messages, backend } = req.body;
+		if (!messages || !Array.isArray(messages)) {
+			return res.status(400).json({ error: 'Messages array is required' });
+		}
+		const data = await callLLM(THEME_SYSTEM_PROMPT, messages, 4096, backend);
+		if (data.error) {
+			return res.status(data.status).json({
+				error: data.data.error?.message || `API error: ${data.status}`
+			});
+		}
+		res.json(data.data);
+	} catch (error) {
+		console.error('Theme-chat error:', error);
 		res.status(500).json({ error: error.message });
 	}
 });
@@ -728,6 +788,186 @@ app.patch('/api/community-scenes/:id', async (req, res) => {
 		});
 	} catch (error) {
 		console.error('Community rename error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+
+// Community themes (editor chrome), same Blob pattern as community-scenes.
+const THEME_PREFIX = 'community-themes/';
+
+function themePathname(id, name) {
+	return `${THEME_PREFIX}${id}--${encodeURIComponent(sanitizeSceneName(name))}.json`;
+}
+
+function parseThemePathname(pathname) {
+	if (!pathname || !pathname.startsWith(THEME_PREFIX) || !pathname.endsWith('.json')) return null;
+	const base = pathname.slice(THEME_PREFIX.length, -'.json'.length);
+	const sep = base.indexOf('--');
+	if (sep < 0) return { id: base, name: 'Untitled' };
+	const id = base.slice(0, sep);
+	const encoded = base.slice(sep + 2);
+	let name = 'Untitled';
+	try { name = decodeURIComponent(encoded) || name; } catch { /* keep */ }
+	return { id, name };
+}
+
+async function listThemeBlobs() {
+	const { blobs } = await blobList(THEME_PREFIX);
+	const byId = new Map();
+	for (const b of blobs || []) {
+		const parsed = parseThemePathname(b.pathname);
+		if (!parsed || !parsed.id) continue;
+		const uploadedAt = b.uploadedAt ? new Date(b.uploadedAt).getTime() : 0;
+		const prev = byId.get(parsed.id);
+		if (!prev || uploadedAt >= prev._uploadedAtMs) {
+			byId.set(parsed.id, {
+				id: parsed.id,
+				name: parsed.name,
+				url: b.url,
+				pathname: b.pathname,
+				uploadedAt: b.uploadedAt,
+				size: b.size,
+				_uploadedAtMs: uploadedAt
+			});
+		}
+	}
+	return [...byId.values()].sort((a, b) => b._uploadedAtMs - a._uploadedAtMs);
+}
+
+async function findThemeBlob(id) {
+	if (!SCENE_ID_RE.test(id)) return null;
+	const themes = await listThemeBlobs();
+	return themes.find(t => t.id === id) || null;
+}
+
+async function readThemeRecord(meta) {
+	const res = await fetch(meta.url);
+	if (!res.ok) throw new Error(`Failed to fetch theme blob: ${res.status}`);
+	const data = await res.json();
+	return {
+		...data,
+		id: data.id || meta.id,
+		name: sanitizeSceneName(data.name || meta.name),
+		url: meta.url,
+		pathname: meta.pathname,
+		uploadedAt: meta.uploadedAt
+	};
+}
+
+function sanitizeThemePayload(body) {
+	const name = sanitizeSceneName(body?.name);
+	const cssVars = (body?.cssVars && typeof body.cssVars === 'object' && !Array.isArray(body.cssVars))
+		? body.cssVars
+		: null;
+	if (!cssVars || Object.keys(cssVars).length === 0) {
+		return { error: 'Invalid theme: cssVars object required' };
+	}
+	// Only allow --* keys with string values (no arbitrary injection beyond CSS values).
+	const cleaned = {};
+	for (const [k, v] of Object.entries(cssVars)) {
+		if (typeof k !== 'string' || !k.startsWith('--')) continue;
+		if (typeof v !== 'string') continue;
+		cleaned[k.slice(0, 64)] = String(v).slice(0, 500);
+	}
+	if (Object.keys(cleaned).length === 0) {
+		return { error: 'Invalid theme: no usable cssVars' };
+	}
+	let customCSS = '';
+	if (typeof body.customCSS === 'string') {
+		customCSS = body.customCSS.slice(0, 8000);
+	}
+	return { name, cssVars: cleaned, customCSS };
+}
+
+app.post('/api/community-themes', async (req, res) => {
+	if (!requireBlob(res)) return;
+	try {
+		const cleaned = sanitizeThemePayload(req.body);
+		if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+		const id = newSceneId();
+		const now = new Date().toISOString();
+		const record = {
+			id,
+			name: cleaned.name,
+			cssVars: cleaned.cssVars,
+			customCSS: cleaned.customCSS || '',
+			createdAt: req.body?.createdAt || now,
+			updatedAt: now
+		};
+		const pathname = themePathname(id, cleaned.name);
+		const blob = await blobPut(pathname, JSON.stringify(record), 'application/json');
+		res.json({
+			ok: true,
+			url: blob.url,
+			pathname: blob.pathname || pathname,
+			theme: { id, name: cleaned.name, uploadedAt: now, size: blob.size }
+		});
+	} catch (error) {
+		console.error('Theme upload error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+app.get('/api/community-themes', async (req, res) => {
+	if (!requireBlob(res)) return;
+	try {
+		const listed = await listThemeBlobs();
+		const themes = listed.map(t => ({
+			id: t.id,
+			name: t.name,
+			url: t.url,
+			pathname: t.pathname,
+			uploadedAt: t.uploadedAt,
+			size: t.size
+		}));
+		res.json({ themes });
+	} catch (error) {
+		console.error('Theme list error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+app.get('/api/community-themes/:id', async (req, res) => {
+	if (!requireBlob(res)) return;
+	try {
+		const meta = await findThemeBlob(req.params.id);
+		if (!meta) return res.status(404).json({ error: 'Theme not found' });
+		const record = await readThemeRecord(meta);
+		res.json(record);
+	} catch (error) {
+		console.error('Theme get error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+app.patch('/api/community-themes/:id', async (req, res) => {
+	if (!requireBlob(res)) return;
+	try {
+		const id = req.params.id;
+		const meta = await findThemeBlob(id);
+		if (!meta) return res.status(404).json({ error: 'Theme not found' });
+		if (req.body == null || req.body.name == null) {
+			return res.status(400).json({ error: 'Missing name' });
+		}
+		const name = sanitizeSceneName(req.body.name);
+		const record = await readThemeRecord(meta);
+		record.name = name;
+		record.id = id;
+		record.updatedAt = new Date().toISOString();
+		const newPathname = themePathname(id, name);
+		const blob = await blobPut(newPathname, JSON.stringify(record), 'application/json');
+		if (meta.pathname !== newPathname && meta.url) {
+			await blobDelete(meta.url);
+		}
+		res.json({
+			ok: true,
+			url: blob.url,
+			pathname: blob.pathname || newPathname,
+			theme: { id, name, uploadedAt: record.updatedAt, size: blob.size }
+		});
+	} catch (error) {
+		console.error('Theme rename error:', error);
 		res.status(500).json({ error: error.message });
 	}
 });

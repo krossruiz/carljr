@@ -104,6 +104,22 @@
 		   Desktop chat window — movable, resizable, floats over the 3D scene
 		   ================================================================== */
 		#desktop-chat {
+			/* Themeable chrome (editor window only — not the 3D scene).
+			   Themes set these vars / optional #dchat-theme-style custom CSS. */
+			--dchat-bg: rgba(22, 22, 32, 0.82);
+			--dchat-border: rgba(255, 255, 255, 0.08);
+			--dchat-text: #ffffff;
+			--dchat-text-muted: rgba(255, 255, 255, 0.55);
+			--dchat-header-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(139, 92, 246, 0.25));
+			--dchat-tabs-bg: rgba(255, 255, 255, 0.03);
+			--dchat-tab-color: rgba(255, 255, 255, 0.5);
+			--dchat-tab-active-bg: rgba(255, 255, 255, 0.09);
+			--dchat-tab-active-color: #ffffff;
+			--dchat-input-bg: rgba(255, 255, 255, 0.1);
+			--dchat-accent: #8b5cf6;
+			--dchat-accent-2: #6366f1;
+			--dchat-radius: 18px;
+			--dchat-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 			position: fixed;
 			top: 80px;
 			left: 24px;
@@ -115,16 +131,17 @@
 			max-height: calc(100vh - 24px);
 			display: flex;
 			flex-direction: column;
-			background: rgba(22, 22, 32, 0.82);
-			border: 1px solid rgba(255, 255, 255, 0.08);
-			border-radius: 18px;
+			background: var(--dchat-bg);
+			border: 1px solid var(--dchat-border);
+			border-radius: var(--dchat-radius);
 			box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
 			backdrop-filter: blur(18px);
 			-webkit-backdrop-filter: blur(18px);
 			overflow: hidden;
 			z-index: 1000;
 			pointer-events: auto;
-			color: #fff;
+			color: var(--dchat-text);
+			font-family: var(--dchat-font);
 		}
 
 		#desktop-chat.hidden { display: none; }
@@ -139,7 +156,7 @@
 			align-items: center;
 			justify-content: space-between;
 			padding: 12px 14px;
-			background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(139, 92, 246, 0.25));
+			background: var(--dchat-header-bg);
 			cursor: grab;
 			flex-shrink: 0;
 			border-bottom: 1px solid rgba(255, 255, 255, 0.06);
@@ -153,13 +170,13 @@
 			gap: 4px;
 			padding: 8px 10px 0;
 			flex-shrink: 0;
-			background: rgba(255, 255, 255, 0.03);
+			background: var(--dchat-tabs-bg);
 		}
 
 		.dchat-tab {
 			border: none;
 			background: transparent;
-			color: rgba(255, 255, 255, 0.5);
+			color: var(--dchat-tab-color);
 			font-size: 12px;
 			font-weight: 600;
 			padding: 7px 10px;
@@ -174,8 +191,8 @@
 		.dchat-tab:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
 
 		.dchat-tab.active {
-			background: rgba(255, 255, 255, 0.09);
-			color: #fff;
+			background: var(--dchat-tab-active-bg);
+			color: var(--dchat-tab-active-color);
 		}
 
 		.dchat-panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
@@ -375,7 +392,7 @@
 		.dchat-btn.accent { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
 
 		/* --- Scenes tab (export / load / manage saved scenes) --- */
-		#dchat-scenes { padding: 14px; gap: 10px; overflow: hidden; }
+		#dchat-scenes, #dchat-community { padding: 14px; gap: 10px; overflow: hidden; }
 
 		/* #dchat-scenes-buttons and #dchat-community-buttons are populated at
 		   runtime by menuSystem.js - see SCENES_BUTTONS/COMMUNITY_BUTTONS in
@@ -474,7 +491,7 @@
 			font-size: 14px;
 			border: none;
 			border-radius: 11px;
-			background: rgba(255, 255, 255, 0.1);
+			background: var(--dchat-input-bg, rgba(255, 255, 255, 0.1));
 			color: #fff;
 			outline: none;
 		}
@@ -921,11 +938,140 @@
 			gap: 6px;
 			flex-shrink: 0;
 		}
+		/* High-contrast chips: dark text on solid light pills so Load/Share/Rename
+		   stay readable on dark community rows (and after themes). */
 		.dchat-scene-actions .dchat-btn {
 			width: auto;
 			padding: 6px 10px;
 			flex-shrink: 0;
+			background: #f4f4f8;
+			color: #12121a;
+			border: 1px solid rgba(0, 0, 0, 0.12);
+			font-weight: 700;
+			box-shadow: 0 1px 0 rgba(255,255,255,0.35) inset;
 		}
+		.dchat-scene-actions .dchat-btn:hover {
+			background: #ffffff;
+			color: #0a0a10;
+			transform: scale(1.03);
+		}
+		.dchat-scene-actions .dchat-btn.accent {
+			background: linear-gradient(135deg, var(--dchat-accent-2, #6366f1), var(--dchat-accent, #8b5cf6));
+			color: #fff;
+			border-color: transparent;
+		}
+
+		/* Community Scenes | Themes sub-tabs */
+		#dchat-community-subtabs {
+			display: flex;
+			gap: 6px;
+			padding: 0 0 10px;
+			flex-shrink: 0;
+		}
+		.dchat-subtab {
+			flex: 1;
+			border: 1px solid rgba(255,255,255,0.12);
+			background: rgba(255,255,255,0.06);
+			color: rgba(255,255,255,0.65);
+			font-size: 12px;
+			font-weight: 700;
+			padding: 7px 8px;
+			border-radius: 8px;
+			cursor: pointer;
+		}
+		.dchat-subtab:hover { color: #fff; background: rgba(255,255,255,0.1); }
+		.dchat-subtab.active {
+			background: linear-gradient(135deg, var(--dchat-accent-2, #6366f1), var(--dchat-accent, #8b5cf6));
+			color: #fff;
+			border-color: transparent;
+		}
+		.dchat-community-section { display: none; flex-direction: column; flex: 1; min-height: 0; }
+		.dchat-community-section.active { display: flex; }
+
+		#dchat-themes-buttons { flex-shrink: 0; }
+		#dchat-themes-list {
+			flex: 1;
+			overflow-y: auto;
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			min-height: 0;
+			margin-top: 10px;
+		}
+		#dchat-themes-list::-webkit-scrollbar { width: 8px; }
+		#dchat-themes-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+
+		#dchat-theme-chat {
+			flex-shrink: 0;
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			margin-top: 10px;
+			padding-top: 10px;
+			border-top: 1px solid rgba(255,255,255,0.08);
+			max-height: 42%;
+			min-height: 120px;
+		}
+		#dchat-theme-chat-messages {
+			flex: 1;
+			overflow-y: auto;
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			min-height: 48px;
+			font-size: 12px;
+		}
+		.dchat-theme-msg {
+			padding: 6px 8px;
+			border-radius: 8px;
+			line-height: 1.35;
+			white-space: pre-wrap;
+			word-break: break-word;
+		}
+		.dchat-theme-msg.user {
+			align-self: flex-end;
+			background: rgba(99, 102, 241, 0.35);
+			max-width: 92%;
+		}
+		.dchat-theme-msg.assistant {
+			align-self: flex-start;
+			background: rgba(255,255,255,0.08);
+			max-width: 92%;
+		}
+		.dchat-theme-msg.system {
+			align-self: stretch;
+			color: rgba(255,255,255,0.45);
+			font-style: italic;
+			background: none;
+			padding: 2px 0;
+		}
+		#dchat-theme-chat-row {
+			display: flex;
+			gap: 6px;
+			flex-shrink: 0;
+		}
+		#dchat-theme-chat-input {
+			flex: 1;
+			background: var(--dchat-input-bg, rgba(255,255,255,0.1));
+			border: 1px solid rgba(255,255,255,0.12);
+			border-radius: 8px;
+			color: var(--dchat-text, #fff);
+			font-size: 12px;
+			padding: 7px 9px;
+			outline: none;
+		}
+		#dchat-theme-chat-input::placeholder { color: rgba(255,255,255,0.4); }
+		#dchat-theme-chat-send {
+			border: none;
+			border-radius: 8px;
+			padding: 7px 12px;
+			font-weight: 700;
+			font-size: 12px;
+			cursor: pointer;
+			background: linear-gradient(135deg, var(--dchat-accent-2, #6366f1), var(--dchat-accent, #8b5cf6));
+			color: #fff;
+		}
+		#dchat-theme-chat-send:disabled { opacity: 0.5; cursor: default; }
 
 		#editor-link {
 			display: none;
@@ -1143,8 +1289,30 @@
 
 		<div id="dchat-panel-community" class="dchat-panel">
 			<div id="dchat-community" style="display:flex;flex-direction:column;flex:1;min-height:0">
-				<div id="dchat-community-buttons"></div>
-				<div id="dchat-community-list"></div>
+				<div id="dchat-community-subtabs">
+					<button type="button" class="dchat-subtab active" data-community-section="scenes">Scenes</button>
+					<button type="button" class="dchat-subtab" data-community-section="themes">Themes</button>
+				</div>
+
+				<div id="dchat-community-section-scenes" class="dchat-community-section active">
+					<div id="dchat-community-buttons"></div>
+					<div id="dchat-community-list"></div>
+				</div>
+
+				<div id="dchat-community-section-themes" class="dchat-community-section">
+					<div id="dchat-themes-buttons"></div>
+					<div id="dchat-themes-list"></div>
+					<div id="dchat-theme-chat">
+						<div class="dchat-section-label">Theme restyle chat</div>
+						<div id="dchat-theme-chat-messages">
+							<div class="dchat-theme-msg system">Ask for editor chrome restyles (colors, fonts, panels). The AI returns a theme JSON that applies live — then upload it to Community Themes.</div>
+						</div>
+						<div id="dchat-theme-chat-row">
+							<input type="text" id="dchat-theme-chat-input" placeholder="e.g. dark emerald glass, soft rounded tabs..." autocomplete="off" />
+							<button type="button" id="dchat-theme-chat-send">Send</button>
+						</div>
+					</div>
+				</div>
 			</div>
 		</div>
 

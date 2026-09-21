@@ -90,6 +90,11 @@ const dchatSceneList = document.getElementById('dchat-scene-list');
 const dchatExportCombinedMount = document.getElementById('dchat-export-combined-mount');
 const dchatCommunityButtonsMount = document.getElementById('dchat-community-buttons');
 const dchatCommunityList = document.getElementById('dchat-community-list');
+const dchatThemesButtonsMount = document.getElementById('dchat-themes-buttons');
+const dchatThemesList = document.getElementById('dchat-themes-list');
+const dchatThemeChatMessages = document.getElementById('dchat-theme-chat-messages');
+const dchatThemeChatInput = document.getElementById('dchat-theme-chat-input');
+const dchatThemeChatSend = document.getElementById('dchat-theme-chat-send');
 
 // ============================================================================
 // Shared menu button specs (menuSystem.js) — the single source of truth for
@@ -118,12 +123,19 @@ const COMMUNITY_BUTTONS = [
 	{ id: 'upload', label: 'Upload Current Scene', action: 'community:upload', variant: 'accent' },
 	{ id: 'refresh', label: 'Refresh', action: 'community:refresh' }
 ];
+const THEME_BUTTONS = [
+	{ id: 'uploadTheme', label: 'Upload Current Theme', action: 'themes:upload', variant: 'accent' },
+	{ id: 'refreshThemes', label: 'Refresh', action: 'themes:refresh' },
+	{ id: 'resetTheme', label: 'Reset Default', action: 'themes:reset' }
+];
 // Mini in-panel tabs drawn at the top of the XR scene panel, since it has
 // no separate mesh for Community (unlike desktop's tab bar) - see
 // SCENE_PANEL_SUB_TABS usage in renderScenePanel()/handleScenePanelHit().
+// Themes is desktop-primary (theme chat + apply); XR gets Apply list only.
 const SCENE_PANEL_SUB_TABS = [
 	{ id: 'scenes', label: 'Scenes', action: 'panel:scenes' },
-	{ id: 'community', label: 'Community', action: 'panel:community' }
+	{ id: 'community', label: 'Community', action: 'panel:community' },
+	{ id: 'themes', label: 'Themes', action: 'panel:themes' }
 ];
 
 // Routes both a desktop SVG click and an XR controller-ray/touch hit to the
@@ -165,6 +177,15 @@ function handleMenuAction(action) {
 		case 'community:refresh':
 			refreshCommunityScenes();
 			break;
+		case 'themes:upload':
+			uploadCurrentThemeToCommunity();
+			break;
+		case 'themes:refresh':
+			refreshCommunityThemes();
+			break;
+		case 'themes:reset':
+			applyTheme(DEFAULT_THEME, { announce: true });
+			break;
 		case 'panel:scenes':
 			scenePanelSubTab = 'scenes';
 			renderScenePanel();
@@ -172,6 +193,10 @@ function handleMenuAction(action) {
 		case 'panel:community':
 			scenePanelSubTab = 'community';
 			refreshCommunityScenes();
+			break;
+		case 'panel:themes':
+			scenePanelSubTab = 'themes';
+			refreshCommunityThemes();
 			break;
 	}
 }
@@ -184,7 +209,7 @@ let displayMessages = []; // Cleaned messages for canvas display
 let isLoading = false;
 let selectedBackend = null; // 'claude' | 'fable' | 'openai' | 'ollama' - set once /api/backends resolves
 let selectedOllamaModel = null; // e.g. 'llama3.2:latest' - set once the Ollama model list loads
-let cachedPrompts = null; // { systemPrompt, fixCodePrompt } - fetched once from /api/prompts
+let cachedPrompts = null; // { systemPrompt, fixCodePrompt, themePrompt } - fetched once from /api/prompts
 let pendingAttachments = []; // files staged via the 📎 button, sent with the next message - see buildUserContent()
 
 // Ollama always runs on the SAME machine as the browser (this is what makes
@@ -327,8 +352,15 @@ let executedCodeBlocks = [];  // vr-exec code blocks from current chat session
 let loadedScenes = [];        // imported scene files: { id, name, thumbnail, codeBlocks, active, createdAt, _thumbImage }
 let sceneScrollOffset = 0;
 let sceneFileExtension = 'vrscene';
-let scenePanelSubTab = 'scenes'; // 'scenes' | 'community' - see SCENE_PANEL_SUB_TABS
+let scenePanelSubTab = 'scenes'; // 'scenes' | 'community' | 'themes' - see SCENE_PANEL_SUB_TABS
 let communityScenesCache = []; // last-fetched list, so the XR panel has something to draw without re-fetching every frame
+let communityThemesCache = [];
+let communitySection = 'scenes'; // desktop Community tab: 'scenes' | 'themes'
+let pendingRename = null;
+let pendingRenameKind = 'scene'; // 'scene' | 'theme'
+let currentTheme = null; // last applied theme object { name, cssVars, customCSS }
+let themeChatMessages = []; // API context for /api/theme-chat
+let themeChatLoading = false;
 // Button hitboxes from the most recent draw of each canvas panel, reused
 // by handleSidePanelHit/handleScenePanelHit (see menuSystem.js hitTestButtons).
 let sidePanelEnvButtonBoxes = [];
@@ -1993,9 +2025,10 @@ function hideShareModal() {
 	if (shareModal) shareModal.classList.remove('visible');
 }
 
-function showRenameModal(cs) {
+function showRenameModal(cs, kind = 'scene') {
 	if (displayOnlyMode || !cs) return;
 	pendingRename = cs;
+	pendingRenameKind = kind === 'theme' ? 'theme' : 'scene';
 	if (renameNameInput) renameNameInput.value = cs.name || '';
 	if (renameModal) renameModal.classList.add('visible');
 	setTimeout(() => {
@@ -2008,6 +2041,7 @@ function showRenameModal(cs) {
 function hideRenameModal() {
 	if (renameModal) renameModal.classList.remove('visible');
 	pendingRename = null;
+	pendingRenameKind = 'scene';
 }
 
 async function copyText(text) {
@@ -2152,6 +2186,7 @@ async function loadCommunitySceneById(sceneId, { activate = true } = {}) {
 
 async function renameCommunityScene() {
 	const cs = pendingRename;
+	const kind = pendingRenameKind;
 	const name = renameNameInput ? renameNameInput.value.trim() : '';
 	if (!cs || !cs.id) {
 		hideRenameModal();
@@ -2163,6 +2198,18 @@ async function renameCommunityScene() {
 	}
 	hideRenameModal();
 	try {
+		if (kind === 'theme') {
+			const res = await fetch(`/api/community-themes/${encodeURIComponent(cs.id)}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name })
+			});
+			const data = await res.json();
+			if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
+			updateStatus(`Renamed theme to "${data.theme?.name || name}"`, 'connected');
+			refreshCommunityThemes();
+			return;
+		}
 		const res = await fetch(`/api/community-scenes/${encodeURIComponent(cs.id)}`, {
 			method: 'PATCH',
 			headers: { 'Content-Type': 'application/json' },
@@ -2174,6 +2221,299 @@ async function renameCommunityScene() {
 		refreshCommunityScenes();
 	} catch (err) {
 		updateStatus(`Rename error: ${err.message}`, 'error');
+	}
+}
+
+
+// --- Community themes (editor chrome) + theme restyle chat ---
+
+const DEFAULT_THEME = {
+	name: 'Default',
+	cssVars: {
+		'--dchat-bg': 'rgba(22, 22, 32, 0.82)',
+		'--dchat-border': 'rgba(255, 255, 255, 0.08)',
+		'--dchat-text': '#ffffff',
+		'--dchat-text-muted': 'rgba(255, 255, 255, 0.55)',
+		'--dchat-header-bg': 'linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(139, 92, 246, 0.25))',
+		'--dchat-tabs-bg': 'rgba(255, 255, 255, 0.03)',
+		'--dchat-tab-color': 'rgba(255, 255, 255, 0.5)',
+		'--dchat-tab-active-bg': 'rgba(255, 255, 255, 0.09)',
+		'--dchat-tab-active-color': '#ffffff',
+		'--dchat-input-bg': 'rgba(255, 255, 255, 0.1)',
+		'--dchat-accent': '#8b5cf6',
+		'--dchat-accent-2': '#6366f1',
+		'--dchat-radius': '18px',
+		'--dchat-font': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+	},
+	customCSS: ''
+};
+
+function getThemeStyleEl() {
+	let el = document.getElementById('dchat-theme-style');
+	if (!el) {
+		el = document.createElement('style');
+		el.id = 'dchat-theme-style';
+		document.head.appendChild(el);
+	}
+	return el;
+}
+
+function applyTheme(theme, { announce = false } = {}) {
+	if (!desktopChat || !theme || !theme.cssVars) return;
+	const vars = theme.cssVars;
+	// Clear previous custom vars by resetting known keys to defaults first
+	for (const k of Object.keys(DEFAULT_THEME.cssVars)) {
+		desktopChat.style.removeProperty(k);
+	}
+	for (const [k, v] of Object.entries(vars)) {
+		if (typeof k === 'string' && k.startsWith('--') && typeof v === 'string') {
+			desktopChat.style.setProperty(k, v);
+		}
+	}
+	const styleEl = getThemeStyleEl();
+	const custom = typeof theme.customCSS === 'string' ? theme.customCSS : '';
+	// Soft-scope: only keep rules that mention #desktop-chat, or wrap bare rules.
+	styleEl.textContent = custom ? custom : '';
+	currentTheme = {
+		name: theme.name || 'Custom',
+		cssVars: { ...vars },
+		customCSS: custom
+	};
+	try {
+		localStorage.setItem('carljr-theme', JSON.stringify(currentTheme));
+	} catch { /* ignore quota */ }
+	if (announce) updateStatus(`Theme: ${currentTheme.name}`, 'connected');
+}
+
+function snapshotCurrentTheme(name) {
+	const cssVars = {};
+	const cs = desktopChat ? getComputedStyle(desktopChat) : null;
+	for (const k of Object.keys(DEFAULT_THEME.cssVars)) {
+		let v = desktopChat?.style?.getPropertyValue(k)?.trim();
+		if (!v && cs) v = cs.getPropertyValue(k)?.trim();
+		if (!v) v = DEFAULT_THEME.cssVars[k];
+		cssVars[k] = v;
+	}
+	// Also pick up any extra --dchat-* set inline
+	if (desktopChat?.style) {
+		for (let i = 0; i < desktopChat.style.length; i++) {
+			const prop = desktopChat.style.item(i);
+			if (prop.startsWith('--') && !(prop in cssVars)) {
+				cssVars[prop] = desktopChat.style.getPropertyValue(prop).trim();
+			}
+		}
+	}
+	const styleEl = document.getElementById('dchat-theme-style');
+	return {
+		name: name || currentTheme?.name || 'My Theme',
+		cssVars,
+		customCSS: styleEl?.textContent || currentTheme?.customCSS || ''
+	};
+}
+
+function parseThemeJsonBlocks(text) {
+	const themes = [];
+	const displayText = String(text || '').replace(/```theme-json\n([\s\S]*?)```/g, (match, body) => {
+		try {
+			const obj = JSON.parse(body.trim());
+			if (obj && obj.cssVars && typeof obj.cssVars === 'object') {
+				themes.push({
+					name: obj.name || 'AI Theme',
+					cssVars: obj.cssVars,
+					customCSS: typeof obj.customCSS === 'string' ? obj.customCSS : ''
+				});
+				return `[Applied theme "${obj.name || 'AI Theme'}"]`;
+			}
+		} catch { /* ignore bad JSON */ }
+		return '[Invalid theme-json block]';
+	});
+	// Also accept ```theme-css fences as customCSS-only overlays
+	const withCss = displayText.replace(/```theme-css\n([\s\S]*?)```/g, (match, body) => {
+		themes.push({
+			name: currentTheme?.name || 'Custom CSS',
+			cssVars: { ...(currentTheme?.cssVars || DEFAULT_THEME.cssVars) },
+			customCSS: body.trim()
+		});
+		return '[Applied theme CSS]';
+	});
+	return { displayText: withCss.trim(), themes };
+}
+
+function setCommunitySection(section) {
+	communitySection = section === 'themes' ? 'themes' : 'scenes';
+	document.querySelectorAll('.dchat-subtab').forEach(btn => {
+		btn.classList.toggle('active', btn.dataset.communitySection === communitySection);
+	});
+	const scenesSec = document.getElementById('dchat-community-section-scenes');
+	const themesSec = document.getElementById('dchat-community-section-themes');
+	if (scenesSec) scenesSec.classList.toggle('active', communitySection === 'scenes');
+	if (themesSec) themesSec.classList.toggle('active', communitySection === 'themes');
+	if (communitySection === 'themes') refreshCommunityThemes();
+	else refreshCommunityScenes();
+}
+
+function uploadCurrentThemeToCommunity() {
+	if (displayOnlyMode) return;
+	const name = window.prompt('Theme name?', currentTheme?.name || 'My Theme');
+	if (name == null) return;
+	const theme = snapshotCurrentTheme(name.trim() || 'My Theme');
+	updateStatus('Uploading theme...', 'connecting');
+	fetch('/api/community-themes', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(theme)
+	}).then(res => res.json().then(data => ({ ok: res.ok, data }))).then(({ ok, data }) => {
+		if (!ok || data.error) throw new Error(data.error || 'Upload failed');
+		updateStatus(`Uploaded theme "${data.theme?.name || theme.name}"`, 'connected');
+		refreshCommunityThemes();
+	}).catch(err => {
+		updateStatus(`Theme upload error: ${err.message}`, 'error');
+	});
+}
+
+function refreshCommunityThemes() {
+	if (scenePanelSubTab === 'themes') {
+		// XR will redraw from cache after fetch
+	}
+	if (!dchatThemesList && scenePanelSubTab !== 'themes') return;
+	if (dchatThemesList) dchatThemesList.innerHTML = '<div class="dchat-scene-empty">Loading...</div>';
+	fetch('/api/community-themes')
+		.then(res => res.json().then(data => ({ ok: res.ok, data })))
+		.then(({ ok, data }) => {
+			if (!ok || data.error) throw new Error(data.error || 'Failed to list themes');
+			renderCommunityThemeList(data.themes || []);
+		})
+		.catch(err => {
+			communityThemesCache = [];
+			if (scenePanelSubTab === 'themes') renderScenePanel();
+			if (!dchatThemesList) return;
+			dchatThemesList.innerHTML = '';
+			const empty = document.createElement('div');
+			empty.className = 'dchat-scene-empty';
+			empty.textContent = err.message;
+			dchatThemesList.appendChild(empty);
+		});
+}
+
+function renderCommunityThemeList(themes) {
+	communityThemesCache = themes;
+	if (scenePanelSubTab === 'themes') renderScenePanel();
+	if (!dchatThemesList) return;
+	dchatThemesList.innerHTML = '';
+	if (themes.length === 0) {
+		const empty = document.createElement('div');
+		empty.className = 'dchat-scene-empty';
+		empty.textContent = 'No community themes yet. Restyle via chat, then upload!';
+		dchatThemesList.appendChild(empty);
+		return;
+	}
+	for (const th of themes) {
+		const item = document.createElement('div');
+		item.className = 'dchat-scene-item';
+
+		const name = document.createElement('div');
+		name.className = 'dchat-scene-name';
+		name.textContent = th.name;
+		name.title = th.name + (th.id ? ` (${th.id})` : '');
+
+		const actions = document.createElement('div');
+		actions.className = 'dchat-scene-actions';
+
+		const apply = document.createElement('button');
+		apply.className = 'dchat-btn accent';
+		apply.textContent = 'Apply';
+		apply.addEventListener('click', () => applyCommunityTheme(th));
+
+		const rename = document.createElement('button');
+		rename.className = 'dchat-btn';
+		rename.textContent = 'Rename';
+		rename.addEventListener('click', () => showRenameModal(th, 'theme'));
+
+		actions.append(apply, rename);
+		item.append(name, actions);
+		dchatThemesList.appendChild(item);
+	}
+}
+
+function applyCommunityTheme(th) {
+	updateStatus(`Loading theme "${th.name}"...`, 'connecting');
+	const fetchUrl = th.id ? `/api/community-themes/${encodeURIComponent(th.id)}` : th.url;
+	fetch(fetchUrl)
+		.then(res => {
+			if (!res.ok) throw new Error('Failed to fetch theme');
+			return res.json();
+		})
+		.then(data => {
+			applyTheme(data, { announce: true });
+		})
+		.catch(err => {
+			updateStatus(`Theme load error: ${err.message}`, 'error');
+		});
+}
+
+function appendThemeChatBubble(role, content) {
+	if (!dchatThemeChatMessages) return;
+	const div = document.createElement('div');
+	div.className = `dchat-theme-msg ${role}`;
+	div.textContent = content;
+	dchatThemeChatMessages.appendChild(div);
+	dchatThemeChatMessages.scrollTop = dchatThemeChatMessages.scrollHeight;
+}
+
+async function sendThemeChat() {
+	if (themeChatLoading || displayOnlyMode) return;
+	const text = (dchatThemeChatInput?.value || '').trim();
+	if (!text) return;
+	if (dchatThemeChatInput) dchatThemeChatInput.value = '';
+	themeChatMessages.push({ role: 'user', content: text });
+	appendThemeChatBubble('user', text);
+	themeChatLoading = true;
+	if (dchatThemeChatSend) dchatThemeChatSend.disabled = true;
+	appendThemeChatBubble('system', 'Thinking...');
+	try {
+		let data;
+		if (selectedBackend === 'ollama') {
+			data = await callOllamaDirect(
+				cachedPrompts?.themePrompt || '',
+				themeChatMessages.map(m => ({ role: m.role, content: m.content })),
+				selectedOllamaModel,
+				4096
+			);
+		} else {
+			const response = await fetch('/api/theme-chat', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					messages: themeChatMessages.map(m => ({ role: m.role, content: m.content })),
+					backend: selectedBackend
+				})
+			});
+			const responseText = await response.text();
+			try { data = JSON.parse(responseText); }
+			catch { throw new Error(`Server returned non-JSON (${response.status}): ${responseText.slice(0, 120)}`); }
+			if (!response.ok) throw new Error(data.error || `API error: ${response.status}`);
+		}
+		const rawText = data.content?.[0]?.text || data.content || 'No response';
+		const raw = typeof rawText === 'string' ? rawText : (Array.isArray(rawText) ? rawText.map(p => p.text || '').join('') : String(rawText));
+		themeChatMessages.push({ role: 'assistant', content: raw });
+		const { displayText, themes } = parseThemeJsonBlocks(raw);
+		// Remove "Thinking..." bubble
+		if (dchatThemeChatMessages?.lastChild?.classList?.contains('system')) {
+			dchatThemeChatMessages.lastChild.remove();
+		}
+		appendThemeChatBubble('assistant', displayText || '(theme applied)');
+		if (themes.length > 0) {
+			applyTheme(themes[themes.length - 1], { announce: true });
+		}
+	} catch (err) {
+		if (dchatThemeChatMessages?.lastChild?.classList?.contains('system')) {
+			dchatThemeChatMessages.lastChild.remove();
+		}
+		appendThemeChatBubble('system', `Error: ${err.message}`);
+		updateStatus(`Theme chat error: ${err.message}`, 'error');
+	} finally {
+		themeChatLoading = false;
+		if (dchatThemeChatSend) dchatThemeChatSend.disabled = false;
 	}
 }
 
@@ -2347,16 +2687,15 @@ function renderScenePanel() {
 	ctx.textAlign = 'center';
 	ctx.fillText('Scenes', w / 2, 35);
 
-	// Sub-tabs (Scenes / Community) - the desktop menu has real top-level
-	// tabs for this; this panel has no separate mesh for Community, so it
-	// gets a mini in-panel tab bar instead. See SCENE_PANEL_SUB_TABS.
+	// Sub-tabs (Scenes / Community / Themes) - desktop has Community with
+	// Scenes|Themes sections; XR uses a third mini-tab for theme Apply.
 	const subTabButtons = SCENE_PANEL_SUB_TABS.map(t => ({
 		...t,
 		variant: scenePanelSubTab === t.id ? 'active' : 'inactiveToggle'
 	}));
-	const subTabLayout = buildButtonLayout(subTabButtons, { width: w - 24, x: 12, y: 58, height: 36, perRow: 2, gap: 6 });
+	const subTabLayout = buildButtonLayout(subTabButtons, { width: w - 24, x: 12, y: 58, height: 36, perRow: 3, gap: 6 });
 	scenePanelSubTabBoxes = subTabLayout.boxes;
-	drawButtonsToCanvas(ctx, scenePanelSubTabBoxes, { fontSize: 15 });
+	drawButtonsToCanvas(ctx, scenePanelSubTabBoxes, { fontSize: 13 });
 
 	const contentTop = 58 + subTabLayout.totalHeight + 10;
 
@@ -2472,6 +2811,57 @@ function renderScenePanel() {
 		if (hasContent && loadedScenes.length > 0) {
 			drawButtonsToCanvas(ctx, buildButtonLayout(EXPORT_COMBINED_BUTTON, { width: w - 24, x: 12, y: 700, height: 48, perRow: 1 }).boxes, { fontSize: 18 });
 		}
+	} else if (scenePanelSubTab === 'themes') {
+		// Themes sub-tab: upload/refresh/reset + Apply list (theme chat is desktop-only).
+		const btnLayout = buildButtonLayout(THEME_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 40, perRow: 3, gap: 6 });
+		scenePanelButtonBoxes = btnLayout.boxes;
+		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 12 });
+
+		const sepY = contentTop + btnLayout.totalHeight + 8;
+		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+		ctx.fillRect(12, sepY, w - 24, 1);
+
+		const listTop = sepY + 8;
+		scenePanelListTop = listTop;
+		const itemH = 56;
+		const listBottom = h - 16;
+		const maxVisible = Math.floor((listBottom - listTop) / itemH);
+
+		if (communityThemesCache.length === 0) {
+			ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+			ctx.textAlign = 'center';
+			ctx.fillText('No community themes yet', w / 2, listTop + 40);
+			ctx.fillText('(restyle chat is on desktop)', w / 2, listTop + 62);
+		} else {
+			for (let i = 0; i < maxVisible && i < communityThemesCache.length; i++) {
+				const th = communityThemesCache[i];
+				const itemY = listTop + i * itemH;
+
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
+				ctx.fill();
+
+				ctx.textAlign = 'left';
+				ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
+				ctx.fillStyle = '#ffffff';
+				const nameX = 16;
+				const maxNameW = w - nameX - 80;
+				let dName = th.name;
+				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
+				if (dName !== th.name) dName += '…';
+				ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
+
+				const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
+				ctx.fillStyle = 'rgba(16, 185, 129, 0.45)';
+				roundRect(ctx, pillX, pillY, pillW, pillH, 8);
+				ctx.fill();
+				ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
+				ctx.fillStyle = '#ffffff';
+				ctx.textAlign = 'center';
+				ctx.fillText('Apply', pillX + pillW / 2, pillY + pillH / 2 + 4);
+			}
+		}
 	} else {
 		// Community sub-tab: shared button spec + a simple name/Load list.
 		const btnLayout = buildButtonLayout(COMMUNITY_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 44, perRow: 2, gap: 8 });
@@ -2509,21 +2899,22 @@ function renderScenePanel() {
 				const maxNameW = w - nameX - 80;
 				let dName = cs.name;
 				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
-				if (dName !== cs.name) dName += '\u2026';
+				if (dName !== cs.name) dName += '…';
 				ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
 
-				// "Load" pill button
+				// High-contrast Load pill
 				const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
-				ctx.fillStyle = 'rgba(99, 102, 241, 0.4)';
+				ctx.fillStyle = '#f4f4f8';
 				roundRect(ctx, pillX, pillY, pillW, pillH, 8);
 				ctx.fill();
 				ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = '#ffffff';
+				ctx.fillStyle = '#12121a';
 				ctx.textAlign = 'center';
 				ctx.fillText('Load', pillX + pillW / 2, pillY + pillH / 2 + 4);
 			}
 		}
 	}
+
 
 	ctx.textAlign = 'left';
 	sceneTexture.needsUpdate = true;
@@ -2582,6 +2973,12 @@ function handleScenePanelHit(uv) {
 		// Export Combined button
 		const combHit = hitTestButtons(buildButtonLayout(EXPORT_COMBINED_BUTTON, { width: 384 - 24, x: 12, y: 700, height: 48, perRow: 1 }).boxes, canvasX, canvasY);
 		if (combHit) handleMenuAction(combHit.action);
+	} else if (scenePanelSubTab === 'themes') {
+		const listTop = scenePanelListTop, itemH = 56;
+		const idx = Math.floor((canvasY - listTop) / itemH);
+		if (canvasY >= listTop && idx >= 0 && idx < communityThemesCache.length) {
+			applyCommunityTheme(communityThemesCache[idx]);
+		}
 	} else {
 		// Community list - each row is name + a "Load" pill, see renderScenePanel
 		const listTop = scenePanelListTop, itemH = 56;
@@ -3797,16 +4194,27 @@ document.addEventListener('keydown', (e) => {
 	desktopChat.style.top = `${top}px`;
 });
 
-// Tabs: Chat / Environment / Scenes / Community.
+// Tabs: Chat / Environment / Scenes / Community (Scenes|Themes sections).
 document.querySelectorAll('.dchat-tab').forEach(tab => {
 	tab.addEventListener('click', () => {
 		document.querySelectorAll('.dchat-tab').forEach(t => t.classList.remove('active'));
 		document.querySelectorAll('.dchat-panel').forEach(p => p.classList.remove('active'));
 		tab.classList.add('active');
 		document.getElementById(`dchat-panel-${tab.dataset.tab}`).classList.add('active');
-		if (tab.dataset.tab === 'community') refreshCommunityScenes();
+		if (tab.dataset.tab === 'community') setCommunitySection(communitySection);
 	});
 });
+
+document.querySelectorAll('.dchat-subtab').forEach(btn => {
+	btn.addEventListener('click', () => setCommunitySection(btn.dataset.communitySection));
+});
+
+if (dchatThemeChatSend) dchatThemeChatSend.addEventListener('click', sendThemeChat);
+if (dchatThemeChatInput) {
+	dchatThemeChatInput.addEventListener('keydown', (e) => {
+		if (e.key === 'Enter') { e.preventDefault(); sendThemeChat(); }
+	});
+}
 
 // Environment tab: AR/VR toggle (shared button spec, see ENV_MODE_BUTTONS/
 // handleMenuAction), color picker, brightness slider. The toggle buttons
@@ -3841,6 +4249,9 @@ dchatResetCameraBtn.addEventListener('click', () => {
 mountButtonsToDOM(dchatScenesButtonsMount, SCENES_BUTTONS, { width: 384, height: 44, gap: 8, minWidth: 100, fontSize: 12 }, handleMenuAction);
 mountButtonsToDOM(dchatExportCombinedMount, EXPORT_COMBINED_BUTTON, { width: 384, height: 44, gap: 8, perRow: 1, fontSize: 13 }, handleMenuAction);
 mountButtonsToDOM(dchatCommunityButtonsMount, COMMUNITY_BUTTONS, { width: 384, height: 44, gap: 8, perRow: 2, fontSize: 12 }, handleMenuAction);
+if (dchatThemesButtonsMount) {
+	mountButtonsToDOM(dchatThemesButtonsMount, THEME_BUTTONS, { width: 384, height: 44, gap: 8, perRow: 3, fontSize: 11 }, handleMenuAction);
+}
 
 // Switches between the desktop chat window (windowed browser) and the slim
 // dom-overlay bar (AR/VR immersive session), and shows/hides the legacy 3D
@@ -3934,6 +4345,15 @@ setImmersiveUiMode(false);
 
 // Populate the community list (and auto-load /s/:id or /e/:id / ?scene= shares).
 // Runs after setImmersiveUiMode so display-only can hide the desktop chrome cleanly.
+// Restore last applied editor theme (chrome only).
+try {
+	const saved = localStorage.getItem('carljr-theme');
+	if (saved) applyTheme(JSON.parse(saved));
+	else currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
+} catch {
+	currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
+}
+
 bootSharedScene();
 
 // Snapshot system objects so we can distinguish user-created objects later
