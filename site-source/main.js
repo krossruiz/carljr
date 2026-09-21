@@ -1,9 +1,7 @@
 import * as THREE from 'three';
 import { XRButton } from './threejsAddons/XRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { XRPlanes } from 'three/examples/jsm/webxr/XRPlanes.js';
 import { buildButtonLayout, drawButtonsToCanvas, hitTestButtons, mountButtonsToDOM } from './menuSystem.js';
-import { createArSurfaceTracker } from './arSurfaceTracking.js';
 
 // ============================================================================
 // Configuration
@@ -483,15 +481,10 @@ const _arCamPos = new THREE.Vector3();
 // ============================================================================
 document.body.appendChild(
 	XRButton.createButton(renderer, {
-		optionalFeatures: ['hit-test', 'plane-detection', 'anchors', 'dom-overlay'],
+		optionalFeatures: ['hit-test', 'dom-overlay'],
 		domOverlay: { root: overlayRoot }
 	})
 );
-
-// Visualize WebXR-detected planes (tables/floors) when the UA supports plane-detection.
-const xrDetectedPlanes = new XRPlanes(renderer);
-xrDetectedPlanes.visible = false;
-scene.add(xrDetectedPlanes);
 
 // ============================================================================
 // Mobile pseudo-XR: Google Cardboard (stereo + gyro) and AR-camera
@@ -660,16 +653,12 @@ function placeArAnchorInFrontOfCamera(distance = 1.6) {
 	arPlacementRoot.rotation.set(0, Math.atan2(_arFwd.x, _arFwd.z), 0);
 }
 
-let arPlacementBackend = null; // null | 'ground' | 'alva' | 'webxr'
-
-function setArPlacementActive(active, opts = {}) {
+function setArPlacementActive(active) {
 	ensureArPlacementMarker();
 	if (arPlacementMarker) arPlacementMarker.visible = !!active;
 	if (active) {
-		arPlacementBackend = opts.backend || 'ground';
 		adoptSceneContentIntoArPlacement();
-		// Ground fallback places in front of camera; Alva/WebXR snap to real surfaces.
-		if (arPlacementBackend === 'ground') placeArAnchorInFrontOfCamera();
+		placeArAnchorInFrontOfCamera();
 		// Touch must move the scene, never orbit/pan the camera.
 		orbitControls.enabled = false;
 		orbitControls.enableRotate = false;
@@ -682,7 +671,6 @@ function setArPlacementActive(active, opts = {}) {
 		arPlacementRoot.rotation.set(0, 0, 0);
 		arDragging = false;
 		arDragPointerId = null;
-		arPlacementBackend = null;
 		orbitControls.enableRotate = true;
 		orbitControls.enablePan = true;
 		orbitControls.enableZoom = true;
@@ -691,17 +679,8 @@ function setArPlacementActive(active, opts = {}) {
 }
 
 function onArPointerDown(e) {
-	if (renderer.xr.isPresenting) return; // WebXR uses transient-input hit-test
 	if (mobileXRMode !== 'ar') return;
 	if (isArUiTouchTarget(e.target)) return;
-	if (typeof arSurfaceTracker !== 'undefined' && arSurfaceTracker.getMode() === 'alva') {
-		arSurfaceTracker.onAlvaPointerDown(e);
-		arDragging = true;
-		arDragPointerId = e.pointerId;
-		try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-		e.preventDefault();
-		return;
-	}
 	if (!raycastGround(e.clientX, e.clientY, _arLastHit)) return;
 	arDragging = true;
 	arDragPointerId = e.pointerId;
@@ -712,11 +691,6 @@ function onArPointerDown(e) {
 function onArPointerMove(e) {
 	if (!arDragging || mobileXRMode !== 'ar') return;
 	if (arDragPointerId != null && e.pointerId !== arDragPointerId) return;
-	if (typeof arSurfaceTracker !== 'undefined' && arSurfaceTracker.getMode() === 'alva') {
-		arSurfaceTracker.onAlvaPointerMove(e);
-		e.preventDefault();
-		return;
-	}
 	if (!raycastGround(e.clientX, e.clientY, _arHit)) return;
 	const dx = _arHit.x - _arLastHit.x;
 	const dz = _arHit.z - _arLastHit.z;
@@ -729,7 +703,6 @@ function onArPointerMove(e) {
 function onArPointerUp(e) {
 	if (!arDragging) return;
 	if (arDragPointerId != null && e.pointerId !== arDragPointerId) return;
-	if (typeof arSurfaceTracker !== 'undefined') arSurfaceTracker.onAlvaPointerUp(e);
 	arDragging = false;
 	arDragPointerId = null;
 }
@@ -739,19 +712,6 @@ renderer.domElement.addEventListener('pointermove', onArPointerMove, { passive: 
 renderer.domElement.addEventListener('pointerup', onArPointerUp);
 renderer.domElement.addEventListener('pointercancel', onArPointerUp);
 renderer.domElement.addEventListener('pointerleave', onArPointerUp);
-
-const arSurfaceTracker = createArSurfaceTracker({
-	THREE,
-	renderer,
-	scene,
-	camera,
-	player,
-	arPlacementRoot,
-	ensureMarker: ensureArPlacementMarker,
-	setPlacementActive: setArPlacementActive,
-	updateStatus,
-	arVideoEl
-});
 
 async function enterMobileXRMode(mode) {
 	const granted = await requestDeviceOrientationPermission();
@@ -778,12 +738,9 @@ async function enterMobileXRMode(mode) {
 		isVRMode = true;
 	}
 
-	// Cardboard still uses deviceorientation. Walk-in-AR uses AlvaAR SLAM instead.
-	if (mode !== 'ar') {
-		window.addEventListener('deviceorientation', onDeviceOrientation);
-		window.addEventListener('orientationchange', onScreenOrientationChange);
-		onScreenOrientationChange();
-	}
+	window.addEventListener('deviceorientation', onDeviceOrientation);
+	window.addEventListener('orientationchange', onScreenOrientationChange);
+	onScreenOrientationChange();
 
 	try { await document.documentElement.requestFullscreen(); } catch { /* best-effort */ }
 	if (mode === 'cardboard' && screen.orientation && screen.orientation.lock) {
@@ -797,16 +754,8 @@ async function enterMobileXRMode(mode) {
 	mobileXRExitBtn.hidden = false;
 	mobileXRWalkBtn.hidden = false;
 	if (mode === 'ar') {
-		try {
-			await arSurfaceTracker.startAlvaAR();
-		} catch (err) {
-			console.error('AlvaAR init failed, falling back to ground plane:', err);
-			setArPlacementActive(true, { backend: 'ground' });
-			window.addEventListener('deviceorientation', onDeviceOrientation);
-			window.addEventListener('orientationchange', onScreenOrientationChange);
-			onScreenOrientationChange();
-			updateStatus('Walk in AR (basic) — drag on ground plane', 'connected');
-		}
+		setArPlacementActive(true);
+		updateStatus('Walk in AR — drag to move scene · walk to look around', 'connected');
 	} else {
 		updateStatus('Cardboard VR active', 'connected');
 	}
@@ -835,10 +784,7 @@ function exitMobileXRMode() {
 	const wasAr = mobileXRMode === 'ar';
 	mobileXRMode = null;
 	mobileMoveHeld = false;
-	if (wasAr) {
-		if (arSurfaceTracker.getMode() === 'alva') arSurfaceTracker.stopAlvaAR();
-		else setArPlacementActive(false);
-	}
+	if (wasAr) setArPlacementActive(false);
 	orbitControls.enabled = true;
 	mobileXRExitBtn.hidden = true;
 	mobileXRWalkBtn.hidden = true;
@@ -5296,18 +5242,10 @@ renderer.xr.addEventListener('sessionstart', () => {
 	// AR sessions report 'additive' or 'alpha-blend' and keep the transparent
 	// background as before.
 	const session = renderer.xr.getSession();
-	const blend = session && session.environmentBlendMode;
-	const isPassthroughAr = blend === 'additive' || blend === 'alpha-blend';
-	if (session && blend === 'opaque') {
+	if (session && session.environmentBlendMode === 'opaque') {
 		isVRMode = true;
 		applyEnvironmentMode();
 		renderSidePanel();
-		xrDetectedPlanes.visible = false;
-	} else if (isPassthroughAr) {
-		isVRMode = false;
-		applyEnvironmentMode();
-		xrDetectedPlanes.visible = true;
-		arSurfaceTracker.onWebXRSessionStart(session);
 	}
 	renderDomEnv();
 });
@@ -5316,8 +5254,6 @@ renderer.xr.addEventListener('sessionend', () => {
 	positionAllPanels(1.4);
 	// Reset to AR mode when leaving XR
 	isVRMode = false;
-	xrDetectedPlanes.visible = false;
-	arSurfaceTracker.onWebXRSessionEnd();
 	applyEnvironmentMode();
 	renderSidePanel();
 	renderDomEnv();
@@ -5367,13 +5303,10 @@ const _hitTargets = []; // populated after panels exist
 // hold detection (push-to-talk). Keyed by handedness → button index → bool.
 const _prevButtons = { left: {}, right: {} };
 
-renderer.setAnimationLoop((time, frame) => {
+renderer.setAnimationLoop((time) => {
 	// Frame delta (seconds), clamped so a paused/backgrounded tab doesn't jump.
 	const dt = _locoPrevTime ? Math.min(0.1, (time - _locoPrevTime) / 1000) : 0;
 	_locoPrevTime = time;
-
-	// WebXR AR: surface hit-test + touch drag onto real planes
-	if (frame && renderer.xr.isPresenting) arSurfaceTracker.updateWebXRFrame(frame);
 
 	// Voice-activity detection for always-on mic. Driven here (not via
 	// window.requestAnimationFrame, which is paused during immersive sessions) so
@@ -5515,14 +5448,10 @@ renderer.setAnimationLoop((time, frame) => {
 	} else if (mobileXRMode) {
 		// Hide reticles - no controllers in Cardboard/AR-camera mode
 		for (const r of reticles) if (r) r.visible = false;
-		if (mobileXRMode === 'ar' && arSurfaceTracker.getMode() === 'alva') {
-			// AlvaAR SLAM: camera pose from video + plane snap on tap/drag
-			arSurfaceTracker.updateAlvaFrame();
-		} else {
-			// Cardboard (or Alva fallback): gyro look
-			updateCameraFromDeviceOrientation();
-		}
-		// Hold-to-walk still available; touch never orbits the camera.
+		// Gyro matches the phone to the camera feed (look by pointing the device).
+		// Touch does NOT rotate the camera — in Walk-in-AR it drags the scene
+		// placement instead. Hold-to-walk still nudges position if needed.
+		updateCameraFromDeviceOrientation();
 		if (mobileMoveHeld) applyLocomotionInput(dt, camera, 0, -1, 0, 0);
 	} else {
 		// Hide reticles outside XR
