@@ -455,6 +455,25 @@ scene.add(player);
 
 window.hud = hud;
 
+// World-anchored content root used in Walk-in-AR: scene content sits here on a
+// ground plane and can be dragged with a finger. Outside AR it stays at origin
+// and is unused (content lives directly under `scene`).
+const arPlacementRoot = new THREE.Group();
+arPlacementRoot.name = 'arPlacementRoot';
+scene.add(arPlacementRoot);
+window.arPlacementRoot = arPlacementRoot;
+
+let arPlacementMarker = null; // subtle ring shown only in Walk-in-AR
+let arDragging = false;
+let arDragPointerId = null;
+const _arGroundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const _arRaycaster = new THREE.Raycaster();
+const _arNdc = new THREE.Vector2();
+const _arHit = new THREE.Vector3();
+const _arLastHit = new THREE.Vector3();
+const _arFwd = new THREE.Vector3();
+const _arCamPos = new THREE.Vector3();
+
 // ============================================================================
 // XR Button Setup — AR passthrough on Quest standalone, plain VR fallback
 // for PCVR headsets over Link/Air Link/SteamVR (Quest 3 via Link, Index,
@@ -472,9 +491,9 @@ document.body.appendChild(
 // passthrough (camera feed + gyro), for phones that can't do real OpenXR -
 // iPhone Safari has no WebXR at all, and plenty of Android browsers/devices
 // don't support immersive-vr/ar either. Neither mode gets real 6DOF
-// position tracking (no SLAM) - the gyro drives look direction and the
-// existing locomotion system (see applyLocomotionInput) drives "walking",
-// triggered here by a hold-to-walk button instead of a thumbstick/keyboard.
+// position tracking (no SLAM). Gyro matches look to the phone; Walk-in-AR
+// pins scene content to a ground-plane anchor you can finger-drag. Hold-to-walk
+// can still nudge the camera; touch never orbits/rotates the view.
 // ============================================================================
 let mobileXRMode = null; // null | 'cardboard' | 'ar'
 let mobileMoveHeld = false;
@@ -546,6 +565,154 @@ async function requestDeviceOrientationPermission() {
 	return true;
 }
 
+function ensureArPlacementMarker() {
+	if (arPlacementMarker) return arPlacementMarker;
+	const ring = new THREE.Mesh(
+		new THREE.RingGeometry(0.28, 0.34, 48),
+		new THREE.MeshBasicMaterial({
+			color: 0xffffff,
+			transparent: true,
+			opacity: 0.55,
+			side: THREE.DoubleSide,
+			depthWrite: false
+		})
+	);
+	ring.rotation.x = -Math.PI / 2;
+	ring.position.y = 0.01;
+	ring.name = 'arPlacementMarker';
+	ring.renderOrder = 5;
+	arPlacementRoot.add(ring);
+	arPlacementMarker = ring;
+	return ring;
+}
+
+function isArUiTouchTarget(target) {
+	if (!target || !target.closest) return false;
+	return !!(
+		target.closest('#mobile-xr-exit') ||
+		target.closest('#mobile-xr-walk') ||
+		target.closest('#desktop-chat') ||
+		target.closest('#desktop-chat-reopen') ||
+		target.closest('#files-picker-modal') ||
+		target.closest('#export-modal') ||
+		target.closest('#share-modal') ||
+		target.closest('#rename-modal') ||
+		target.closest('#XRButton') ||
+		target.closest('.mobile-xr-btn')
+	);
+}
+
+function raycastGround(clientX, clientY, out) {
+	_arNdc.x = (clientX / window.innerWidth) * 2 - 1;
+	_arNdc.y = -(clientY / window.innerHeight) * 2 + 1;
+	_arRaycaster.setFromCamera(_arNdc, camera);
+	return _arRaycaster.ray.intersectPlane(_arGroundPlane, out) !== null;
+}
+
+/** Parent for world content: AR placement root while Walk-in-AR is active. */
+function getWorldContentParent() {
+	return mobileXRMode === 'ar' ? arPlacementRoot : scene;
+}
+
+function gatherMovableSceneRoots() {
+	const roots = [];
+	for (const child of [...scene.children]) {
+		if (child === player || child === arPlacementRoot) continue;
+		if (systemObjectIds.has(child.uuid)) continue;
+		roots.push(child);
+	}
+	// Also pull any user content that somehow stayed under scene while marker/root exist
+	return roots;
+}
+
+function adoptSceneContentIntoArPlacement() {
+	for (const child of gatherMovableSceneRoots()) {
+		arPlacementRoot.attach(child);
+	}
+}
+
+function releaseArPlacementContentToScene() {
+	for (const child of [...arPlacementRoot.children]) {
+		if (child === arPlacementMarker) continue;
+		scene.attach(child);
+	}
+}
+
+function placeArAnchorInFrontOfCamera(distance = 1.6) {
+	camera.getWorldPosition(_arCamPos);
+	camera.getWorldDirection(_arFwd);
+	_arFwd.y = 0;
+	if (_arFwd.lengthSq() < 1e-6) _arFwd.set(0, 0, -1);
+	_arFwd.normalize();
+	arPlacementRoot.position.set(
+		_arCamPos.x + _arFwd.x * distance,
+		0,
+		_arCamPos.z + _arFwd.z * distance
+	);
+	// Keep yaw so the scene faces the user
+	arPlacementRoot.rotation.set(0, Math.atan2(_arFwd.x, _arFwd.z), 0);
+}
+
+function setArPlacementActive(active) {
+	ensureArPlacementMarker();
+	if (arPlacementMarker) arPlacementMarker.visible = !!active;
+	if (active) {
+		adoptSceneContentIntoArPlacement();
+		placeArAnchorInFrontOfCamera();
+		// Touch must move the scene, never orbit/pan the camera.
+		orbitControls.enabled = false;
+		orbitControls.enableRotate = false;
+		orbitControls.enablePan = false;
+		orbitControls.enableZoom = false;
+		renderer.domElement.style.touchAction = 'none';
+	} else {
+		releaseArPlacementContentToScene();
+		arPlacementRoot.position.set(0, 0, 0);
+		arPlacementRoot.rotation.set(0, 0, 0);
+		arDragging = false;
+		arDragPointerId = null;
+		orbitControls.enableRotate = true;
+		orbitControls.enablePan = true;
+		orbitControls.enableZoom = true;
+		renderer.domElement.style.touchAction = '';
+	}
+}
+
+function onArPointerDown(e) {
+	if (mobileXRMode !== 'ar') return;
+	if (isArUiTouchTarget(e.target)) return;
+	if (!raycastGround(e.clientX, e.clientY, _arLastHit)) return;
+	arDragging = true;
+	arDragPointerId = e.pointerId;
+	try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+	e.preventDefault();
+}
+
+function onArPointerMove(e) {
+	if (!arDragging || mobileXRMode !== 'ar') return;
+	if (arDragPointerId != null && e.pointerId !== arDragPointerId) return;
+	if (!raycastGround(e.clientX, e.clientY, _arHit)) return;
+	const dx = _arHit.x - _arLastHit.x;
+	const dz = _arHit.z - _arLastHit.z;
+	arPlacementRoot.position.x += dx;
+	arPlacementRoot.position.z += dz;
+	_arLastHit.copy(_arHit);
+	e.preventDefault();
+}
+
+function onArPointerUp(e) {
+	if (!arDragging) return;
+	if (arDragPointerId != null && e.pointerId !== arDragPointerId) return;
+	arDragging = false;
+	arDragPointerId = null;
+}
+
+renderer.domElement.addEventListener('pointerdown', onArPointerDown, { passive: false });
+renderer.domElement.addEventListener('pointermove', onArPointerMove, { passive: false });
+renderer.domElement.addEventListener('pointerup', onArPointerUp);
+renderer.domElement.addEventListener('pointercancel', onArPointerUp);
+renderer.domElement.addEventListener('pointerleave', onArPointerUp);
+
 async function enterMobileXRMode(mode) {
 	const granted = await requestDeviceOrientationPermission();
 	if (!granted) {
@@ -586,9 +753,14 @@ async function enterMobileXRMode(mode) {
 	arCameraBtn.hidden = true;
 	mobileXRExitBtn.hidden = false;
 	mobileXRWalkBtn.hidden = false;
+	if (mode === 'ar') {
+		setArPlacementActive(true);
+		updateStatus('Walk in AR — drag to move scene · walk to look around', 'connected');
+	} else {
+		updateStatus('Cardboard VR active', 'connected');
+	}
 	applyEnvironmentMode();
 	renderDomEnv();
-	updateStatus(mode === 'cardboard' ? 'Cardboard VR active' : 'AR mode active', 'connected');
 }
 
 function exitMobileXRMode() {
@@ -609,9 +781,11 @@ function exitMobileXRMode() {
 		try { screen.orientation.unlock(); } catch { /* ignore */ }
 	}
 
-	orbitControls.enabled = true;
+	const wasAr = mobileXRMode === 'ar';
 	mobileXRMode = null;
 	mobileMoveHeld = false;
+	if (wasAr) setArPlacementActive(false);
+	orbitControls.enabled = true;
 	mobileXRExitBtn.hidden = true;
 	mobileXRWalkBtn.hidden = true;
 	isVRMode = false;
@@ -3477,11 +3651,12 @@ function executeVrCode(code) {
 // so it stays put in the room. Objects the model was *directed* to make
 // head-locked go under `hud` (a child of the camera) and are left alone.
 function reanchorStrayObjects() {
+	const worldParent = getWorldContentParent();
 	// Camera: strays follow the head; the intentional `hud` group is exempt.
 	for (let i = camera.children.length - 1; i >= 0; i--) {
 		const child = camera.children[i];
 		if (child === hud) continue;
-		scene.attach(child); // reparent to the scene root, keeping world transform
+		worldParent.attach(child); // keep world transform; AR uses placement root
 	}
 	// UI panels never legitimately have child meshes, so anything parented to one
 	// is a stray object that would ride along with the window — re-anchor it.
@@ -3489,9 +3664,12 @@ function reanchorStrayObjects() {
 	for (const panel of panels) {
 		if (!panel) continue;
 		for (let i = panel.children.length - 1; i >= 0; i--) {
-			scene.attach(panel.children[i]);
+			worldParent.attach(panel.children[i]);
 		}
 	}
+	// While Walk-in-AR is active, also pull newly added scene-root content into
+	// the draggable placement group so chat-generated objects stay with the scene.
+	if (mobileXRMode === 'ar') adoptSceneContentIntoArPlacement();
 }
 
 const MAX_FIX_ATTEMPTS = 3;
@@ -5270,8 +5448,9 @@ renderer.setAnimationLoop((time) => {
 	} else if (mobileXRMode) {
 		// Hide reticles - no controllers in Cardboard/AR-camera mode
 		for (const r of reticles) if (r) r.visible = false;
-		// Gyro drives look direction; the hold-to-walk button drives movement
-		// in whatever direction the phone is facing (see applyLocomotionInput).
+		// Gyro matches the phone to the camera feed (look by pointing the device).
+		// Touch does NOT rotate the camera — in Walk-in-AR it drags the scene
+		// placement instead. Hold-to-walk still nudges position if needed.
 		updateCameraFromDeviceOrientation();
 		if (mobileMoveHeld) applyLocomotionInput(dt, camera, 0, -1, 0, 0);
 	} else {
