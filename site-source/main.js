@@ -364,6 +364,7 @@ let communityScenesCache = []; // last-fetched list, so the XR panel has somethi
 let communityThemesCache = [];
 let communitySection = 'scenes'; // desktop Community tab: 'scenes' | 'themes'
 let displayOnlyMode = false; // share URL opened with editor chrome stripped
+let pendingShare = null; // share modal payload { id, name, editorUrl, viewUrl }
 let codeEditorDirty = false; // user has unsaved edits in Code tab
 let codeEditorApplying = false;
 let codeEditorLiveTimer = null;
