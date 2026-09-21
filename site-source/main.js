@@ -72,6 +72,17 @@ const desktopMicButton = document.getElementById('desktop-mic-button');
 const desktopAttachButton = document.getElementById('desktop-attach-button');
 const desktopAttachInput = document.getElementById('desktop-attach-input');
 const desktopAttachmentsRow = document.getElementById('desktop-attachments');
+const desktopFilesPickerButton = document.getElementById('desktop-files-picker-button');
+const themeFilesPickerButton = document.getElementById('theme-files-picker-button');
+const dchatThemeAttachmentsRow = document.getElementById('dchat-theme-attachments');
+const dchatFilesList = document.getElementById('dchat-files-list');
+const dchatFilesInput = document.getElementById('dchat-files-input');
+const dchatFilesUpload = document.getElementById('dchat-files-upload');
+const dchatFilesClear = document.getElementById('dchat-files-clear');
+const filesPickerModal = document.getElementById('files-picker-modal');
+const filesPickerList = document.getElementById('files-picker-list');
+const filesPickerCancel = document.getElementById('files-picker-cancel');
+const filesPickerConfirm = document.getElementById('files-picker-confirm');
 const desktopModelSelect = document.getElementById('desktop-model-select');
 const desktopOllamaModelRow = document.getElementById('desktop-ollama-model-row');
 const desktopOllamaModelSelect = document.getElementById('desktop-ollama-model-select');
@@ -217,7 +228,11 @@ let isLoading = false;
 let selectedBackend = null; // 'claude' | 'fable' | 'openai' | 'ollama' - set once /api/backends resolves
 let selectedOllamaModel = null; // e.g. 'llama3.2:latest' - set once the Ollama model list loads
 let cachedPrompts = null; // { systemPrompt, fixCodePrompt, themePrompt } - fetched once from /api/prompts
-let pendingAttachments = []; // files staged via the 📎 button, sent with the next message - see buildUserContent()
+let pendingAttachments = []; // files staged via the 📎 / Files picker, sent with the next scene message - see buildUserContent()
+let pendingThemeAttachments = []; // Files-library picks staged for theme chat
+let contextLibrary = []; // persisted Files-tab library (IndexedDB)
+let filesPickerTarget = 'scene'; // 'scene' | 'theme'
+let filesPickerSelected = new Set();
 
 // Ollama always runs on the SAME machine as the browser (this is what makes
 // it "local"), regardless of whether this page itself was loaded from
@@ -2708,10 +2723,18 @@ function appendThemeChatBubble(role, content) {
 async function sendThemeChat() {
 	if (themeChatLoading || displayOnlyMode) return;
 	const text = (dchatThemeChatInput?.value || '').trim();
-	if (!text) return;
+	if (!text && pendingThemeAttachments.length === 0) return;
 	if (dchatThemeChatInput) dchatThemeChatInput.value = '';
-	themeChatMessages.push({ role: 'user', content: text });
-	appendThemeChatBubble('user', text);
+	const themeAtts = pendingThemeAttachments;
+	pendingThemeAttachments = [];
+	renderThemeAttachmentChips();
+	let userContent = text;
+	for (const att of themeAtts.filter(a => a.kind === 'text')) {
+		userContent += `\n\n--- File: ${att.name} ---\n${att.text}`;
+	}
+	const bubbleLabel = text + (themeAtts.length ? `\n\n📄 ${themeAtts.map(a => a.name).join(', ')}` : '');
+	themeChatMessages.push({ role: 'user', content: userContent || '(attached files)' });
+	appendThemeChatBubble('user', bubbleLabel || '(attached files)');
 	themeChatLoading = true;
 	if (dchatThemeChatSend) dchatThemeChatSend.disabled = true;
 	appendThemeChatBubble('system', 'Thinking...');
@@ -3651,6 +3674,325 @@ function renderAttachmentChips() {
 	}
 }
 
+// ============================================================================
+// Context Files library (Files tab) — persisted in IndexedDB, pickable from chat
+// ============================================================================
+const FILES_DB_NAME = 'carljr-context-files';
+const FILES_STORE = 'files';
+const MAX_LIBRARY_FILES = 40;
+
+function formatFileSize(bytes) {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function openFilesDb() {
+	return new Promise((resolve, reject) => {
+		const req = indexedDB.open(FILES_DB_NAME, 1);
+		req.onupgradeneeded = () => {
+			const db = req.result;
+			if (!db.objectStoreNames.contains(FILES_STORE)) {
+				db.createObjectStore(FILES_STORE, { keyPath: 'id' });
+			}
+		};
+		req.onsuccess = () => resolve(req.result);
+		req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+	});
+}
+
+async function idbGetAllFiles() {
+	const db = await openFilesDb();
+	return new Promise((resolve, reject) => {
+		const tx = db.transaction(FILES_STORE, 'readonly');
+		const req = tx.objectStore(FILES_STORE).getAll();
+		req.onsuccess = () => resolve(req.result || []);
+		req.onerror = () => reject(req.error);
+	});
+}
+
+async function idbPutFile(record) {
+	const db = await openFilesDb();
+	return new Promise((resolve, reject) => {
+		const tx = db.transaction(FILES_STORE, 'readwrite');
+		tx.objectStore(FILES_STORE).put(record);
+		tx.oncomplete = () => resolve();
+		tx.onerror = () => reject(tx.error);
+	});
+}
+
+async function idbDeleteFile(id) {
+	const db = await openFilesDb();
+	return new Promise((resolve, reject) => {
+		const tx = db.transaction(FILES_STORE, 'readwrite');
+		tx.objectStore(FILES_STORE).delete(id);
+		tx.oncomplete = () => resolve();
+		tx.onerror = () => reject(tx.error);
+	});
+}
+
+async function idbClearFiles() {
+	const db = await openFilesDb();
+	return new Promise((resolve, reject) => {
+		const tx = db.transaction(FILES_STORE, 'readwrite');
+		tx.objectStore(FILES_STORE).clear();
+		tx.oncomplete = () => resolve();
+		tx.onerror = () => reject(tx.error);
+	});
+}
+
+async function loadContextLibrary() {
+	try {
+		contextLibrary = await idbGetAllFiles();
+		contextLibrary.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+	} catch (err) {
+		console.warn('Context library load failed', err);
+		contextLibrary = [];
+	}
+	renderContextFilesList();
+}
+
+function libraryRecordFromPendingShape(rec) {
+	// pendingAttachments / library share { id, name, kind, ... }
+	return {
+		id: rec.id,
+		name: rec.name,
+		kind: rec.kind,
+		mediaType: rec.mediaType || '',
+		base64: rec.base64 || '',
+		text: rec.text || '',
+		size: rec.size || 0,
+		addedAt: rec.addedAt || Date.now()
+	};
+}
+
+function attachmentFromLibrary(rec) {
+	const out = {
+		id: rec.id + '-' + Math.random().toString(36).slice(2, 6),
+		name: rec.name,
+		kind: rec.kind,
+		libraryId: rec.id
+	};
+	if (rec.kind === 'image') {
+		out.mediaType = rec.mediaType;
+		out.base64 = rec.base64;
+	} else {
+		out.text = rec.text;
+	}
+	return out;
+}
+
+async function addFilesToLibrary(fileList) {
+	for (const file of fileList) {
+		if (contextLibrary.length >= MAX_LIBRARY_FILES) {
+			updateStatus(`Library full (max ${MAX_LIBRARY_FILES} files)`, 'error');
+			break;
+		}
+		if (file.size > MAX_ATTACHMENT_BYTES) {
+			updateStatus(`"${file.name}" is too large (max ${MAX_ATTACHMENT_BYTES / (1024 * 1024)}MB)`, 'error');
+			continue;
+		}
+		try {
+			let record;
+			const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+			if (file.type.startsWith('image/')) {
+				const dataUrl = await readFileAsDataURL(file);
+				const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+				record = {
+					id, name: file.name, kind: 'image', mediaType: file.type,
+					base64, text: '', size: file.size, addedAt: Date.now()
+				};
+			} else if (isTextyFile(file)) {
+				const text = await readFileAsText(file);
+				record = {
+					id, name: file.name, kind: 'text', mediaType: file.type || 'text/plain',
+					base64: '', text, size: file.size, addedAt: Date.now()
+				};
+			} else {
+				updateStatus(`"${file.name}" isn't a supported type — images and text files only`, 'error');
+				continue;
+			}
+			await idbPutFile(record);
+			contextLibrary.unshift(record);
+			updateStatus(`Added "${file.name}" to Files`, 'connected');
+		} catch (err) {
+			updateStatus(`Couldn't save "${file.name}": ${err.message}`, 'error');
+		}
+	}
+	renderContextFilesList();
+}
+
+async function removeLibraryFile(id) {
+	try {
+		await idbDeleteFile(id);
+	} catch (err) {
+		updateStatus(`Couldn't remove file: ${err.message}`, 'error');
+		return;
+	}
+	contextLibrary = contextLibrary.filter(f => f.id !== id);
+	renderContextFilesList();
+}
+
+async function clearContextLibrary() {
+	if (!contextLibrary.length) return;
+	if (!window.confirm(`Remove all ${contextLibrary.length} files from the library?`)) return;
+	try {
+		await idbClearFiles();
+		contextLibrary = [];
+		renderContextFilesList();
+		updateStatus('Files library cleared', 'connected');
+	} catch (err) {
+		updateStatus(`Clear failed: ${err.message}`, 'error');
+	}
+}
+
+function renderContextFilesList() {
+	if (!dchatFilesList) return;
+	dchatFilesList.innerHTML = '';
+	if (!contextLibrary.length) {
+		const empty = document.createElement('div');
+		empty.className = 'dchat-scene-empty';
+		empty.textContent = 'No files yet. Upload images or text to use as chat context.';
+		dchatFilesList.appendChild(empty);
+		return;
+	}
+	for (const rec of contextLibrary) {
+		const item = document.createElement('div');
+		item.className = 'dchat-file-item';
+
+		const icon = document.createElement('span');
+		icon.textContent = rec.kind === 'image' ? '🖼️' : '📄';
+
+		const meta = document.createElement('div');
+		meta.className = 'meta';
+		const name = document.createElement('div');
+		name.className = 'name';
+		name.textContent = rec.name;
+		name.title = rec.name;
+		const sub = document.createElement('div');
+		sub.className = 'sub';
+		sub.textContent = `${rec.kind === 'image' ? 'Image' : 'Text'} · ${formatFileSize(rec.size || 0)}`;
+		meta.append(name, sub);
+
+		const remove = document.createElement('button');
+		remove.className = 'dchat-btn';
+		remove.textContent = 'Remove';
+		remove.addEventListener('click', () => removeLibraryFile(rec.id));
+
+		item.append(icon, meta, remove);
+		dchatFilesList.appendChild(item);
+	}
+}
+
+function renderThemeAttachmentChips() {
+	if (!dchatThemeAttachmentsRow) return;
+	dchatThemeAttachmentsRow.innerHTML = '';
+	dchatThemeAttachmentsRow.hidden = pendingThemeAttachments.length === 0;
+	for (const att of pendingThemeAttachments) {
+		const chip = document.createElement('div');
+		chip.className = 'dchat-attachment-chip';
+		const icon = document.createElement('span');
+		icon.textContent = att.kind === 'image' ? '🖼️' : '📄';
+		const name = document.createElement('span');
+		name.className = 'dchat-attachment-name';
+		name.textContent = att.name;
+		name.title = att.name;
+		const remove = document.createElement('button');
+		remove.className = 'dchat-attachment-remove';
+		remove.textContent = '×';
+		remove.title = 'Remove';
+		remove.addEventListener('click', () => {
+			pendingThemeAttachments = pendingThemeAttachments.filter(a => a.id !== att.id);
+			renderThemeAttachmentChips();
+		});
+		chip.append(icon, name, remove);
+		dchatThemeAttachmentsRow.appendChild(chip);
+	}
+}
+
+function openFilesPicker(target) {
+	filesPickerTarget = target === 'theme' ? 'theme' : 'scene';
+	filesPickerSelected = new Set();
+	if (!filesPickerModal || !filesPickerList) return;
+	filesPickerList.innerHTML = '';
+	if (!contextLibrary.length) {
+		const empty = document.createElement('div');
+		empty.className = 'dchat-scene-empty';
+		empty.style.padding = '12px';
+		empty.textContent = 'No files in the library yet. Open the Files tab to upload some.';
+		filesPickerList.appendChild(empty);
+	} else {
+		for (const rec of contextLibrary) {
+			const row = document.createElement('label');
+			row.className = 'files-picker-row';
+			const cb = document.createElement('input');
+			cb.type = 'checkbox';
+			cb.value = rec.id;
+			cb.addEventListener('change', () => {
+				if (cb.checked) filesPickerSelected.add(rec.id);
+				else filesPickerSelected.delete(rec.id);
+				row.classList.toggle('selected', cb.checked);
+			});
+			const label = document.createElement('div');
+			label.className = 'label';
+			const name = document.createElement('div');
+			name.className = 'name';
+			name.textContent = `${rec.kind === 'image' ? '🖼️' : '📄'} ${rec.name}`;
+			const sub = document.createElement('div');
+			sub.className = 'sub';
+			sub.textContent = `${rec.kind === 'image' ? 'Image' : 'Text'} · ${formatFileSize(rec.size || 0)}`;
+			label.append(name, sub);
+			row.append(cb, label);
+			filesPickerList.appendChild(row);
+		}
+	}
+	filesPickerModal.classList.add('open');
+	filesPickerModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeFilesPicker() {
+	if (!filesPickerModal) return;
+	filesPickerModal.classList.remove('open');
+	filesPickerModal.setAttribute('aria-hidden', 'true');
+	filesPickerSelected = new Set();
+}
+
+function confirmFilesPicker() {
+	const picked = contextLibrary.filter(f => filesPickerSelected.has(f.id));
+	if (!picked.length) {
+		closeFilesPicker();
+		return;
+	}
+	if (filesPickerTarget === 'theme') {
+		for (const rec of picked) {
+			if (pendingThemeAttachments.length >= MAX_ATTACHMENTS) {
+				updateStatus(`Only ${MAX_ATTACHMENTS} attachments at a time`, 'error');
+				break;
+			}
+			// Theme API is text-only; skip images with a note
+			if (rec.kind === 'image') {
+				updateStatus(`Theme chat uses text files only — skipped "${rec.name}"`, 'error');
+				continue;
+			}
+			if (pendingThemeAttachments.some(a => a.libraryId === rec.id || a.name === rec.name)) continue;
+			pendingThemeAttachments.push(attachmentFromLibrary(rec));
+		}
+		renderThemeAttachmentChips();
+	} else {
+		for (const rec of picked) {
+			if (pendingAttachments.length >= MAX_ATTACHMENTS) {
+				updateStatus(`Only ${MAX_ATTACHMENTS} attachments at a time`, 'error');
+				break;
+			}
+			if (pendingAttachments.some(a => a.libraryId === rec.id || (a.name === rec.name && a.kind === rec.kind))) continue;
+			pendingAttachments.push(attachmentFromLibrary(rec));
+		}
+		renderAttachmentChips();
+	}
+	closeFilesPicker();
+	updateStatus(`Added ${picked.length} file(s) to prompt`, 'connected');
+}
+
 // Shapes attached files into whatever the selected backend expects. Text
 // files fold directly into the plain-text message (works identically for
 // every backend); images need a backend-specific content shape, since
@@ -4299,6 +4641,21 @@ desktopAttachInput?.addEventListener('change', (e) => {
 	desktopAttachInput.value = '';
 });
 
+desktopFilesPickerButton?.addEventListener('click', () => openFilesPicker('scene'));
+themeFilesPickerButton?.addEventListener('click', () => openFilesPicker('theme'));
+filesPickerCancel?.addEventListener('click', closeFilesPicker);
+filesPickerConfirm?.addEventListener('click', confirmFilesPicker);
+filesPickerModal?.addEventListener('click', (e) => {
+	if (e.target === filesPickerModal) closeFilesPicker();
+});
+
+dchatFilesUpload?.addEventListener('click', () => dchatFilesInput?.click());
+dchatFilesInput?.addEventListener('change', (e) => {
+	addFilesToLibrary(e.target.files);
+	dchatFilesInput.value = '';
+});
+dchatFilesClear?.addEventListener('click', () => clearContextLibrary());
+
 if (desktopMicButton) {
 	desktopMicButton.addEventListener('click', toggleMicAlwaysOn);
 	if (!speechSupported) {
@@ -4444,7 +4801,7 @@ document.addEventListener('keydown', (e) => {
 	desktopChat.style.top = `${top}px`;
 });
 
-// Tabs: Chat (Scene|Theme) / Environment / Scenes / Code / Community (Scenes|Themes).
+// Tabs: Chat (Scene|Theme) / Environment / Scenes / Files / Code / Community (Scenes|Themes).
 document.querySelectorAll('.dchat-tab').forEach(tab => {
 	tab.addEventListener('click', () => {
 		document.querySelectorAll('.dchat-tab').forEach(t => t.classList.remove('active'));
@@ -4632,6 +4989,8 @@ applyEnvironmentMode();
 const cachedTheme = loadCachedTheme();
 if (cachedTheme) applyTheme(cachedTheme);
 else currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
+
+loadContextLibrary();
 
 bootSharedScene();
 
