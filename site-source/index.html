@@ -46,7 +46,7 @@
 			border-radius: 12px;
 			background: #f4f4f8;
 			color: #12121a;
-			font: 600 14px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+			font: 600 14px/1.25 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 			letter-spacing: 0.01em;
 			text-align: center;
 			text-decoration: none;
@@ -56,15 +56,21 @@
 			user-select: none;
 			-webkit-user-select: none;
 			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+			/* Keep clear of home-indicator / browser chrome so the full chip shows */
+			bottom: max(20px, calc(env(safe-area-inset-bottom, 0px) + 12px));
+		}
+		/* Short labels: Cardboard / Walk in AR */
+		.mobile-xr-btn {
 			overflow: hidden;
 			text-overflow: ellipsis;
 			white-space: nowrap;
 			max-width: min(42vw, 160px);
-			bottom: max(16px, env(safe-area-inset-bottom, 0px));
 		}
 		.mobile-xr-btn:active,
 		#XRButton:active {
 			background: #e8e8ef;
+		}
+		.mobile-xr-btn:active {
 			transform: scale(0.98);
 		}
 		#cardboard-btn {
@@ -73,21 +79,31 @@
 		#ar-camera-btn {
 			right: max(12px, env(safe-area-inset-right, 0px));
 		}
-		/* WebXR button is centered; keep readable width on phones */
+		/* WebXR button is centered. Long status labels ("VR/AR NOT SUPPORTED")
+		   must wrap and stay fully on-screen — no clip/ellipsis. */
 		#XRButton,
 		a#XRButton {
 			left: 50% !important;
 			transform: translateX(-50%);
 			width: auto !important;
-			min-width: 120px;
-			max-width: min(46vw, 180px);
+			min-width: 140px;
+			max-width: min(92vw, 280px);
+			height: auto !important;
+			overflow: visible;
+			white-space: normal;
+			word-break: normal;
+			hyphens: none;
+			line-height: 1.25;
+			padding: 12px 18px;
 			opacity: 1 !important;
+		}
+		#XRButton:active,
+		a#XRButton:active {
+			transform: translateX(-50%) scale(0.98);
 		}
 
 		@media (max-width: 420px) {
-			.mobile-xr-btn,
-			#XRButton,
-			a#XRButton {
+			.mobile-xr-btn {
 				min-height: 44px;
 				padding: 10px 12px;
 				font-size: 12px;
@@ -96,18 +112,26 @@
 			}
 			#XRButton,
 			a#XRButton {
-				min-width: 96px;
-				max-width: min(38vw, 140px);
+				min-height: 44px;
+				padding: 10px 14px;
+				font-size: 12px;
+				border-radius: 10px;
+				min-width: 120px;
+				max-width: min(94vw, 260px);
 			}
 		}
 
 		@media (max-width: 340px) {
-			.mobile-xr-btn,
-			#XRButton,
-			a#XRButton {
+			.mobile-xr-btn {
 				padding: 10px 8px;
 				font-size: 11px;
 				max-width: 31vw;
+			}
+			#XRButton,
+			a#XRButton {
+				padding: 10px 12px;
+				font-size: 11px;
+				max-width: min(96vw, 240px);
 			}
 		}
 
