@@ -1911,8 +1911,130 @@ function loadSceneFromServer() {
 }
 
 // --- Community scenes (shared, persistent, server-side via /api/community-scenes) ---
+// Shareable URLs: /s/:id (display-only) and /e/:id (editor), plus ?scene=&view=1 / ?display=1.
+
+const shareModal = document.getElementById('share-modal');
+const shareModalTitle = document.getElementById('share-modal-title');
+const shareDisplayOnly = document.getElementById('share-display-only');
+const shareUrlInput = document.getElementById('share-url');
+const shareCloseBtn = document.getElementById('share-close-btn');
+const shareCopyBtn = document.getElementById('share-copy-btn');
+const renameModal = document.getElementById('rename-modal');
+const renameNameInput = document.getElementById('rename-name');
+const renameCancelBtn = document.getElementById('rename-cancel-btn');
+const renameConfirmBtn = document.getElementById('rename-confirm-btn');
+const editorLink = document.getElementById('editor-link');
+
+function parseShareRoute() {
+	const path = window.location.pathname.replace(/\/+$/, '') || '/';
+	const params = new URLSearchParams(window.location.search);
+	const pathMatch = path.match(/^\/(s|e)\/([A-Za-z0-9_-]+)$/);
+	if (pathMatch) {
+		return { sceneId: pathMatch[2], displayOnly: pathMatch[1] === 's' };
+	}
+	return {
+		sceneId: params.get('scene'),
+		displayOnly: params.get('view') === '1' || params.get('display') === '1'
+	};
+}
+
+function applyDisplayOnlyMode() {
+	displayOnlyMode = true;
+	document.body.classList.add('display-only');
+	setUiCollapsed(true);
+	if (uiTogglePanel) uiTogglePanel.visible = false;
+	if (hudStatusPanel) hudStatusPanel.visible = false;
+	if (typeof setDesktopChatMinimized === 'function') {
+		setDesktopChatMinimized(true);
+	} else if (desktopChat) {
+		desktopChat.classList.add('hidden');
+	}
+	if (desktopChatReopenBtn) desktopChatReopenBtn.classList.remove('visible');
+	// XRButton injects a bottom-centered <button> without a stable id.
+	for (const btn of document.querySelectorAll('#app button, body > button')) {
+		const t = (btn.textContent || '').toLowerCase();
+		if (t.includes('enter') && (t.includes('ar') || t.includes('vr') || t.includes('xr'))) {
+			btn.style.display = 'none';
+		}
+	}
+}
+
+function currentShareUrl() {
+	if (!pendingShare) return '';
+	return shareDisplayOnly && shareDisplayOnly.checked ? pendingShare.viewUrl : pendingShare.editorUrl;
+}
+
+function sharePayloadFromMeta(meta, urls = {}) {
+	const origin = window.location.origin;
+	const id = meta.id || urls.id;
+	return {
+		id,
+		name: meta.name || 'Untitled',
+		editorUrl: urls.editorUrl || meta.editorUrl || (id ? `${origin}/e/${id}` : ''),
+		viewUrl: urls.viewUrl || meta.viewUrl || (id ? `${origin}/s/${id}` : '')
+	};
+}
+
+function showShareModal(share) {
+	if (displayOnlyMode) return;
+	pendingShare = share;
+	if (shareModalTitle) shareModalTitle.textContent = share.name ? `Share "${share.name}"` : 'Share Scene';
+	if (shareDisplayOnly) shareDisplayOnly.checked = false;
+	if (shareUrlInput) shareUrlInput.value = currentShareUrl();
+	if (shareCopyBtn) shareCopyBtn.textContent = 'Copy link';
+	if (shareModal) shareModal.classList.add('visible');
+	if (shareUrlInput) {
+		shareUrlInput.focus();
+		shareUrlInput.select();
+	}
+}
+
+function hideShareModal() {
+	if (shareModal) shareModal.classList.remove('visible');
+}
+
+function showRenameModal(cs) {
+	if (displayOnlyMode || !cs) return;
+	pendingRename = cs;
+	if (renameNameInput) renameNameInput.value = cs.name || '';
+	if (renameModal) renameModal.classList.add('visible');
+	setTimeout(() => {
+		if (!renameNameInput) return;
+		renameNameInput.focus();
+		renameNameInput.select();
+	}, 0);
+}
+
+function hideRenameModal() {
+	if (renameModal) renameModal.classList.remove('visible');
+	pendingRename = null;
+}
+
+async function copyText(text) {
+	if (!text) return false;
+	try {
+		if (navigator.clipboard && window.isSecureContext) {
+			await navigator.clipboard.writeText(text);
+			return true;
+		}
+	} catch {
+		// fall through
+	}
+	const ta = document.createElement('textarea');
+	ta.value = text;
+	ta.setAttribute('readonly', '');
+	ta.style.position = 'fixed';
+	ta.style.left = '-9999px';
+	document.body.appendChild(ta);
+	ta.select();
+	let ok = false;
+	try { ok = document.execCommand('copy'); } catch { ok = false; }
+	document.body.removeChild(ta);
+	return ok;
+}
 
 function uploadCurrentSceneToCommunity() {
+	if (displayOnlyMode) return;
 	const name = (loadedScenes.find(s => s.active)?.name) || 'My Scene';
 	const sceneData = buildSceneData(name);
 	if (sceneData.codeBlocks.length === 0) {
@@ -1926,8 +2048,9 @@ function uploadCurrentSceneToCommunity() {
 		body: JSON.stringify(sceneData)
 	}).then(res => res.json().then(data => ({ ok: res.ok, data }))).then(({ ok, data }) => {
 		if (!ok || data.error) throw new Error(data.error || 'Upload failed');
-		updateStatus(`Uploaded "${name}" to community`, 'connected');
+		updateStatus(`Uploaded "${data.scene?.name || name}" to community`, 'connected');
 		refreshCommunityScenes();
+		showShareModal(sharePayloadFromMeta(data.scene || { name, id: data.id }, data));
 	}).catch(err => {
 		updateStatus(`Upload error: ${err.message}`, 'error');
 	});
@@ -1970,36 +2093,147 @@ function renderCommunitySceneList(scenes) {
 		const name = document.createElement('div');
 		name.className = 'dchat-scene-name';
 		name.textContent = cs.name;
-		name.title = cs.name;
+		name.title = cs.name + (cs.id ? ` (${cs.id})` : '');
+
+		const actions = document.createElement('div');
+		actions.className = 'dchat-scene-actions';
 
 		const load = document.createElement('button');
 		load.className = 'dchat-btn';
-		load.style.flexShrink = '0';
-		load.style.width = 'auto';
-		load.style.padding = '6px 10px';
 		load.textContent = 'Load';
 		load.addEventListener('click', () => loadCommunityScene(cs));
 
-		item.append(name, load);
+		const share = document.createElement('button');
+		share.className = 'dchat-btn';
+		share.textContent = 'Share';
+		share.addEventListener('click', () => {
+			showShareModal(sharePayloadFromMeta(cs));
+		});
+
+		const rename = document.createElement('button');
+		rename.className = 'dchat-btn';
+		rename.textContent = 'Rename';
+		rename.addEventListener('click', () => showRenameModal(cs));
+
+		actions.append(load, share, rename);
+		item.append(name, actions);
 		dchatCommunityList.appendChild(item);
 	}
 }
 
 function loadCommunityScene(cs) {
 	updateStatus(`Loading "${cs.name}"...`, 'connecting');
-	fetch(cs.url)
+	const fetchUrl = cs.id ? `/api/community-scenes/${encodeURIComponent(cs.id)}` : cs.url;
+	fetch(fetchUrl)
 		.then(res => {
 			if (!res.ok) throw new Error('Failed to fetch community scene');
 			return res.json();
 		})
 		.then(data => {
-			const sc = addLoadedScene(data, cs.name);
+			const sc = addLoadedScene(data, data.name || cs.name);
 			updateStatus(`Loaded "${sc.name}"`, 'connected');
+			return sc;
 		})
 		.catch(err => {
 			updateStatus(`Load error: ${err.message}`, 'error');
 		});
 }
+
+async function loadCommunitySceneById(sceneId, { activate = true } = {}) {
+	const res = await fetch(`/api/community-scenes/${encodeURIComponent(sceneId)}`);
+	const data = await res.json();
+	if (!res.ok) throw new Error(data.error || 'Scene not found');
+	if (activate) {
+		const sc = addLoadedScene(data, data.name || 'Shared Scene');
+		return { ...sc, editorUrl: data.editorUrl, viewUrl: data.viewUrl, id: data.id || sceneId };
+	}
+	return data;
+}
+
+async function renameCommunityScene() {
+	const cs = pendingRename;
+	const name = renameNameInput ? renameNameInput.value.trim() : '';
+	if (!cs || !cs.id) {
+		hideRenameModal();
+		return;
+	}
+	if (!name) {
+		updateStatus('Name cannot be empty', 'error');
+		return;
+	}
+	hideRenameModal();
+	try {
+		const res = await fetch(`/api/community-scenes/${encodeURIComponent(cs.id)}`, {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name })
+		});
+		const data = await res.json();
+		if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
+		updateStatus(`Renamed to "${data.scene?.name || name}"`, 'connected');
+		refreshCommunityScenes();
+	} catch (err) {
+		updateStatus(`Rename error: ${err.message}`, 'error');
+	}
+}
+
+async function bootSharedScene() {
+	const route = parseShareRoute();
+	if (route.displayOnly) applyDisplayOnlyMode();
+
+	try {
+		await new Promise((resolve) => {
+			// Kick a refresh without blocking forever if Blob isn't configured.
+			const p = fetch('/api/community-scenes')
+				.then(res => res.json().then(data => ({ ok: res.ok, data })))
+				.then(({ ok, data }) => {
+					if (ok && !data.error) renderCommunitySceneList(data.scenes || []);
+				})
+				.catch(() => {})
+				.finally(resolve);
+			return p;
+		});
+	} catch {
+		// ignore
+	}
+
+	if (!route.sceneId) return;
+
+	try {
+		updateStatus('Loading scene...', 'connecting');
+		const sc = await loadCommunitySceneById(route.sceneId, { activate: true });
+		document.title = sc.name ? `${sc.name} — Claude VR` : 'Claude VR Chat';
+		if (editorLink) editorLink.href = sc.editorUrl || `/e/${route.sceneId}`;
+		updateStatus(route.displayOnly ? '' : `Loaded "${sc.name}"`, route.displayOnly ? '' : 'connected');
+	} catch (err) {
+		updateStatus(`Load error: ${err.message}`, 'error');
+	}
+}
+
+if (shareDisplayOnly) {
+	shareDisplayOnly.addEventListener('change', () => {
+		if (shareUrlInput) shareUrlInput.value = currentShareUrl();
+	});
+}
+if (shareCloseBtn) shareCloseBtn.addEventListener('click', hideShareModal);
+if (shareCopyBtn) {
+	shareCopyBtn.addEventListener('click', async () => {
+		const url = currentShareUrl();
+		const ok = await copyText(url);
+		shareCopyBtn.textContent = ok ? 'Copied!' : 'Copy failed';
+		setTimeout(() => { if (shareCopyBtn) shareCopyBtn.textContent = 'Copy link'; }, 1500);
+	});
+}
+if (shareModal) shareModal.addEventListener('click', (e) => { if (e.target === shareModal) hideShareModal(); });
+if (renameCancelBtn) renameCancelBtn.addEventListener('click', hideRenameModal);
+if (renameConfirmBtn) renameConfirmBtn.addEventListener('click', renameCommunityScene);
+if (renameNameInput) {
+	renameNameInput.addEventListener('keydown', (e) => {
+		if (e.key === 'Enter') { e.preventDefault(); renameCommunityScene(); }
+	});
+}
+if (renameModal) renameModal.addEventListener('click', (e) => { if (e.target === renameModal) hideRenameModal(); });
+
 
 exportScreenshotBtn.addEventListener('click', () => {
 	pendingExportThumbnail = captureScreenshot();
@@ -3022,6 +3256,10 @@ function renderHudStatus(text, className) {
 // Show the badge for active/transient states; hide for idle to keep the view clean.
 function updateHudStatus(text, className) {
 	if (!hudStatusPanel) return;
+	if (displayOnlyMode) {
+		hudStatusPanel.visible = false;
+		return;
+	}
 	const idle = !text || text === 'Ready' || text === 'Connected';
 	hudStatusPanel.visible = !idle;
 	if (!idle) renderHudStatus(text, className);
@@ -3082,6 +3320,7 @@ function renderUiToggle() {
 // head-locked toggle button and the status badge stay visible so the UI can
 // always be brought back.
 function setUiCollapsed(collapsed) {
+	if (displayOnlyMode) collapsed = true;
 	uiCollapsed = collapsed;
 	const immersive = renderer.xr.isPresenting;
 	const show = !collapsed;
@@ -3608,19 +3847,21 @@ mountButtonsToDOM(dchatCommunityButtonsMount, COMMUNITY_BUTTONS, { width: 384, h
 // canvas panels accordingly — the desktop window replaces them entirely.
 function setImmersiveUiMode(immersive) {
 	const panels = [chatPanel, inputPanel, sidePanel, scenePanel];
-	for (const p of panels) if (p) p.visible = immersive;
-	if (keyboardPanel) keyboardPanel.visible = immersive && !keyboardCollapsed;
+	for (const p of panels) if (p) p.visible = immersive && !displayOnlyMode;
+	if (keyboardPanel) keyboardPanel.visible = immersive && !keyboardCollapsed && !displayOnlyMode;
 	// The head-locked hud (status badge + Hide/Show-UI panel) only makes sense
 	// with a headset; the desktop equivalents are the DOM #status pill and
 	// #ui-toggle button, already shown outside the 3D scene.
-	hud.visible = immersive;
+	hud.visible = immersive && !displayOnlyMode;
 	// Mouse orbit/pan/zoom only makes sense windowed — the headset pose drives
 	// the camera during an XR session.
 	orbitControls.enabled = !immersive;
 
-	desktopChat.classList.toggle('hidden', immersive || uiCollapsed);
-	if (desktopChatReopenBtn) desktopChatReopenBtn.classList.toggle('visible', !immersive && uiCollapsed);
-	chatOverlayBar.classList.toggle('visible', immersive);
+	desktopChat.classList.toggle('hidden', immersive || uiCollapsed || displayOnlyMode);
+	if (desktopChatReopenBtn) {
+		desktopChatReopenBtn.classList.toggle('visible', !immersive && uiCollapsed && !displayOnlyMode);
+	}
+	if (chatOverlayBar) chatOverlayBar.classList.toggle('visible', immersive && !displayOnlyMode);
 }
 
 // ============================================================================
@@ -3687,13 +3928,13 @@ createSidePanel();
 createScenePanel();
 createHudStatus();
 createUiToggle();
-// Populate the community list once at startup so the XR scene panel's
-// Community sub-tab has content immediately, not just after a desktop tab click.
-refreshCommunityScenes();
-
 // Start in windowed (non-XR) mode: the desktop chat window is the UI, and the
 // legacy 3D canvas panels stay hidden until an AR/VR session starts.
 setImmersiveUiMode(false);
+
+// Populate the community list (and auto-load /s/:id or /e/:id / ?scene= shares).
+// Runs after setImmersiveUiMode so display-only can hide the desktop chrome cleanly.
+bootSharedScene();
 
 // Snapshot system objects so we can distinguish user-created objects later
 snapshotSystemObjects();
@@ -3738,8 +3979,8 @@ renderer.setAnimationLoop((time) => {
 
 		// Build hit-target list (panels that exist and are showing)
 		_hitTargets.length = 0;
-		if (uiTogglePanel) _hitTargets.push(uiTogglePanel); // always reachable
-		if (!uiCollapsed) {
+		if (uiTogglePanel && !displayOnlyMode) _hitTargets.push(uiTogglePanel); // always reachable (unless display-only share)
+		if (!uiCollapsed && !displayOnlyMode) {
 			if (scenePanel) _hitTargets.push(scenePanel);
 			if (sidePanel) _hitTargets.push(sidePanel);
 			if (inputPanel) _hitTargets.push(inputPanel);

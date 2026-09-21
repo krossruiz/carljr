@@ -7,6 +7,7 @@ import https from 'https';
 import dns from 'dns';
 import fs from 'fs';
 import selfsigned from 'selfsigned';
+import { randomBytes } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -476,8 +477,65 @@ app.get('/api/load-scene', (req, res) => {
 // (unlike express/cors/selfsigned, which have no "exports" field), so the
 // SDK never made it into the deployed function and every call 500'd with
 // "Cannot find package '@vercel/blob'".
+//
+// Pathname shape: community-scenes/{id}--{encodeURIComponent(name)}.json
+// The id is stable across renames; the encoded name is only for list
+// display without fetching every blob body. Rename rewrites the pathname
+// (put + best-effort delete of the old blob) and list dedupes by id.
 const COMMUNITY_PREFIX = 'community-scenes/';
 const BLOB_API_BASE = 'https://blob.vercel-storage.com';
+const SCENE_ID_RE = /^[A-Za-z0-9_-]{8,40}$/;
+
+function newSceneId() {
+	return Date.now().toString(36) + randomBytes(4).toString('hex');
+}
+
+function sanitizeSceneName(name) {
+	const cleaned = String(name ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
+	return (cleaned || 'Untitled').slice(0, 80);
+}
+
+function requestOrigin(req) {
+	const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+	const host = (req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`).split(',')[0].trim();
+	return `${proto}://${host}`;
+}
+
+function sceneUrls(req, id) {
+	const origin = requestOrigin(req);
+	return {
+		id,
+		editorUrl: `${origin}/e/${id}`,
+		viewUrl: `${origin}/s/${id}`
+	};
+}
+
+function communityPathname(id, name) {
+	return `${COMMUNITY_PREFIX}${id}--${encodeURIComponent(sanitizeSceneName(name))}.json`;
+}
+
+function parseCommunityPathname(pathname) {
+	if (!pathname || !pathname.startsWith(COMMUNITY_PREFIX) || !pathname.endsWith('.json')) return null;
+	const base = pathname.slice(COMMUNITY_PREFIX.length, -'.json'.length);
+	const sep = base.indexOf('--');
+	if (sep < 0) {
+		// Legacy / id-only pathname
+		return { id: base, name: 'Untitled' };
+	}
+	const id = base.slice(0, sep);
+	const encoded = base.slice(sep + 2);
+	let name = 'Untitled';
+	try { name = decodeURIComponent(encoded) || name; } catch { /* keep default */ }
+	return { id, name };
+}
+
+function requireBlob(res) {
+	if (!process.env.BLOB_READ_WRITE_TOKEN) {
+		res.status(501).json({ error: 'Community uploads aren\'t configured on this server (no Blob store linked).' });
+		return false;
+	}
+	return true;
+}
 
 async function blobPut(pathname, content, contentType) {
 	const res = await fetch(`${BLOB_API_BASE}/${pathname}`, {
@@ -505,21 +563,103 @@ async function blobList(prefix) {
 	return res.json();
 }
 
-app.post('/api/community-scenes', async (req, res) => {
-	if (!process.env.BLOB_READ_WRITE_TOKEN) {
-		return res.status(501).json({ error: 'Community uploads aren\'t configured on this server (no Blob store linked).' });
+async function blobDelete(url) {
+	if (!url) return false;
+	const res = await fetch(`${BLOB_API_BASE}/delete`, {
+		method: 'POST',
+		headers: {
+			Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`,
+			'x-api-version': '7',
+			'Content-Type': 'application/json'
+		},
+		body: JSON.stringify({ urls: [url] })
+	});
+	if (!res.ok) {
+		// Best-effort: older tokens/stores may only accept DELETE ?url=
+		const fallback = await fetch(`${BLOB_API_BASE}?url=${encodeURIComponent(url)}`, {
+			method: 'DELETE',
+			headers: {
+				Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`,
+				'x-api-version': '7'
+			}
+		});
+		if (!fallback.ok) {
+			console.warn('Blob delete failed:', res.status, await res.text().catch(() => ''), fallback.status);
+			return false;
+		}
 	}
+	return true;
+}
+
+async function listCommunityBlobs() {
+	const { blobs } = await blobList(COMMUNITY_PREFIX);
+	const byId = new Map();
+	for (const b of blobs || []) {
+		const parsed = parseCommunityPathname(b.pathname);
+		if (!parsed || !parsed.id) continue;
+		const prev = byId.get(parsed.id);
+		const uploadedAt = b.uploadedAt ? new Date(b.uploadedAt).getTime() : 0;
+		if (!prev || uploadedAt >= prev._uploadedAtMs) {
+			byId.set(parsed.id, {
+				id: parsed.id,
+				name: parsed.name,
+				url: b.url,
+				pathname: b.pathname,
+				uploadedAt: b.uploadedAt,
+				size: b.size,
+				_uploadedAtMs: uploadedAt
+			});
+		}
+	}
+	return [...byId.values()].sort((a, b) => b._uploadedAtMs - a._uploadedAtMs);
+}
+
+async function findCommunityBlob(id) {
+	if (!SCENE_ID_RE.test(id)) return null;
+	const scenes = await listCommunityBlobs();
+	return scenes.find(s => s.id === id) || null;
+}
+
+async function readCommunitySceneRecord(meta) {
+	const res = await fetch(meta.url);
+	if (!res.ok) throw new Error(`Failed to fetch scene blob: ${res.status}`);
+	const data = await res.json();
+	return {
+		...data,
+		id: data.id || meta.id,
+		name: sanitizeSceneName(data.name || meta.name),
+		url: meta.url,
+		pathname: meta.pathname,
+		uploadedAt: meta.uploadedAt
+	};
+}
+
+app.post('/api/community-scenes', async (req, res) => {
+	if (!requireBlob(res)) return;
 	try {
 		const sceneData = req.body;
 		if (!sceneData || !sceneData.codeBlocks || !Array.isArray(sceneData.codeBlocks)) {
 			return res.status(400).json({ error: 'Invalid scene data: missing codeBlocks array' });
 		}
-		const name = (sceneData.name || 'Untitled').slice(0, 80);
-		// Encode the exact name into the pathname (rather than a lossy slug) so
-		// listing can show the real name without fetching every blob's content.
-		const pathname = `${COMMUNITY_PREFIX}${Date.now()}--${encodeURIComponent(name)}.json`;
-		const blob = await blobPut(pathname, JSON.stringify({ ...sceneData, name }), 'application/json');
-		res.json({ ok: true, url: blob.url, pathname: blob.pathname });
+		const id = newSceneId();
+		const name = sanitizeSceneName(sceneData.name);
+		const now = new Date().toISOString();
+		const record = {
+			...sceneData,
+			id,
+			name,
+			createdAt: sceneData.createdAt || now,
+			updatedAt: now
+		};
+		const pathname = communityPathname(id, name);
+		const blob = await blobPut(pathname, JSON.stringify(record), 'application/json');
+		res.json({
+			ok: true,
+			url: blob.url,
+			pathname: blob.pathname || pathname,
+			scene: { id, name, uploadedAt: now, size: blob.size },
+			...sceneUrls(req, id)
+		});
 	} catch (error) {
 		console.error('Community upload error:', error);
 		res.status(500).json({ error: error.message });
@@ -527,32 +667,78 @@ app.post('/api/community-scenes', async (req, res) => {
 });
 
 app.get('/api/community-scenes', async (req, res) => {
-	if (!process.env.BLOB_READ_WRITE_TOKEN) {
-		return res.status(501).json({ error: 'Community uploads aren\'t configured on this server (no Blob store linked).' });
-	}
+	if (!requireBlob(res)) return;
 	try {
-		const { blobs } = await blobList(COMMUNITY_PREFIX);
-		const scenes = blobs
-			.map(b => {
-				const base = b.pathname.slice(COMMUNITY_PREFIX.length).replace(/\.json$/, '');
-				const sep = base.indexOf('--');
-				const encoded = sep >= 0 ? base.slice(sep + 2) : base;
-				let name = 'Untitled';
-				try { name = decodeURIComponent(encoded) || name; } catch { /* keep default */ }
-				return {
-					url: b.url,
-					name,
-					uploadedAt: b.uploadedAt,
-					size: b.size
-				};
-			})
-			.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+		const listed = await listCommunityBlobs();
+		const urls = (id) => sceneUrls(req, id);
+		const scenes = listed.map(s => ({
+			id: s.id,
+			name: s.name,
+			url: s.url,
+			pathname: s.pathname,
+			uploadedAt: s.uploadedAt,
+			size: s.size,
+			...urls(s.id)
+		}));
 		res.json({ scenes });
 	} catch (error) {
 		console.error('Community list error:', error);
 		res.status(500).json({ error: error.message });
 	}
 });
+
+app.get('/api/community-scenes/:id', async (req, res) => {
+	if (!requireBlob(res)) return;
+	try {
+		const meta = await findCommunityBlob(req.params.id);
+		if (!meta) return res.status(404).json({ error: 'Scene not found' });
+		const record = await readCommunitySceneRecord(meta);
+		res.json({ ...record, ...sceneUrls(req, meta.id) });
+	} catch (error) {
+		console.error('Community get error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+app.patch('/api/community-scenes/:id', async (req, res) => {
+	if (!requireBlob(res)) return;
+	try {
+		const id = req.params.id;
+		const meta = await findCommunityBlob(id);
+		if (!meta) return res.status(404).json({ error: 'Scene not found' });
+		if (req.body == null || req.body.name == null) {
+			return res.status(400).json({ error: 'Missing name' });
+		}
+		const name = sanitizeSceneName(req.body.name);
+		const record = await readCommunitySceneRecord(meta);
+		record.name = name;
+		record.id = id;
+		record.updatedAt = new Date().toISOString();
+		const newPathname = communityPathname(id, name);
+		const blob = await blobPut(newPathname, JSON.stringify(record), 'application/json');
+		if (meta.pathname !== newPathname && meta.url) {
+			await blobDelete(meta.url);
+		}
+		res.json({
+			ok: true,
+			url: blob.url,
+			pathname: blob.pathname || newPathname,
+			scene: { id, name, uploadedAt: record.updatedAt, size: blob.size },
+			...sceneUrls(req, id)
+		});
+	} catch (error) {
+		console.error('Community rename error:', error);
+		res.status(500).json({ error: error.message });
+	}
+});
+
+// Pretty share URLs: /s/:id is display-only, /e/:id opens the editor with that scene.
+// <base href="/"> in index.html keeps ./main.js and vendor_modules resolving from root.
+function sendAppIndex(_req, res) {
+	res.sendFile(join(__dirname, 'index.html'));
+}
+app.get('/s/:id', sendAppIndex);
+app.get('/e/:id', sendAppIndex);
 
 // Get local network IP for Quest 3 connection
 function getLocalIP() {

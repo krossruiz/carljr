@@ -3,6 +3,7 @@
 <head>
 	<meta charset="UTF-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<base href="/" />
 	<title>Claude VR Chat</title>
 	<style>
 		html, body {
@@ -845,6 +846,124 @@
 		#status.error {
 			background: rgba(239, 68, 68, 0.9);
 		}
+	
+		/* Share / rename modals reuse export-modal chrome */
+		#share-modal, #rename-modal {
+			display: none;
+			position: fixed;
+			inset: 0;
+			z-index: 3000;
+			background: rgba(0, 0, 0, 0.55);
+			align-items: center;
+			justify-content: center;
+			pointer-events: auto;
+		}
+		#share-modal.visible, #rename-modal.visible { display: flex; }
+		#share-modal-inner, #rename-modal-inner {
+			background: rgba(30, 30, 40, 0.98);
+			border-radius: 16px;
+			padding: 24px;
+			width: min(420px, 92vw);
+			box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+			color: #fff;
+		}
+		#share-modal-inner h3, #rename-modal-inner h3 {
+			margin: 0 0 12px;
+			font-size: 18px;
+		}
+		#share-modal-inner label, #rename-modal-inner label {
+			display: block;
+			font-size: 12px;
+			opacity: 0.7;
+			margin: 12px 0 6px;
+		}
+		#share-modal-inner input[type="text"], #rename-modal-inner input[type="text"] {
+			width: 100%;
+			box-sizing: border-box;
+			padding: 10px 12px;
+			border-radius: 10px;
+			border: 1px solid rgba(255,255,255,0.15);
+			background: rgba(255,255,255,0.08);
+			color: #fff;
+			font-size: 14px;
+		}
+		.share-modal-check {
+			display: flex;
+			align-items: flex-start;
+			gap: 10px;
+			margin-top: 8px;
+			font-size: 13px;
+			line-height: 1.4;
+			opacity: 0.9;
+		}
+		.share-modal-check input { margin-top: 3px; flex-shrink: 0; }
+		.share-rename-buttons {
+			display: flex;
+			gap: 8px;
+			justify-content: flex-end;
+			margin-top: 18px;
+		}
+		.share-rename-buttons button {
+			border: none;
+			border-radius: 10px;
+			padding: 10px 14px;
+			font-size: 13px;
+			font-weight: 600;
+			cursor: pointer;
+			color: #fff;
+		}
+		.share-rename-buttons .btn-secondary { background: rgba(255,255,255,0.12); }
+		.share-rename-buttons .btn-primary {
+			background: linear-gradient(135deg, #6366f1, #8b5cf6);
+		}
+		.dchat-scene-actions {
+			display: flex;
+			gap: 6px;
+			flex-shrink: 0;
+		}
+		.dchat-scene-actions .dchat-btn {
+			width: auto;
+			padding: 6px 10px;
+			flex-shrink: 0;
+		}
+
+		#editor-link {
+			display: none;
+			position: fixed;
+			top: 20px;
+			left: 20px;
+			z-index: 1500;
+			padding: 8px 14px;
+			border-radius: 8px;
+			background: rgba(30, 30, 40, 0.9);
+			color: #fff;
+			font-size: 14px;
+			font-weight: 600;
+			text-decoration: none;
+			pointer-events: auto;
+		}
+
+		/* Display-only / exported share view: hide editor chrome */
+		body.display-only #desktop-chat,
+		body.display-only #desktop-chat-reopen,
+		body.display-only #chat-overlay,
+		body.display-only #export-modal,
+		body.display-only #share-modal,
+		body.display-only #rename-modal,
+		body.display-only #status,
+		body.display-only #ui-toggle,
+		body.display-only #cardboard-button,
+		body.display-only #ar-camera-button,
+		body.display-only #mobile-xr-exit,
+		body.display-only #mobile-xr-walk {
+			display: none !important;
+		}
+		body.display-only #editor-link { display: block; }
+		body.display-only #app > button {
+			/* XRButton is appended under #app */
+			display: none !important;
+		}
+
 	</style>
 </head>
 <body>
@@ -897,6 +1016,36 @@
 					<button id="export-cancel-btn">Cancel</button>
 					<button id="export-download-btn">Save to Device</button>
 					<button id="export-confirm-btn">Export</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- Share URL (community publish / share) -->
+		<div id="share-modal">
+			<div id="share-modal-inner">
+				<h3 id="share-modal-title">Share Scene</h3>
+				<label class="share-modal-check">
+					<input type="checkbox" id="share-display-only" />
+					<span>Display only — hide the chatbot, community panel, and editor UI so visitors just see the finished scene.</span>
+				</label>
+				<label for="share-url">Shareable URL</label>
+				<input type="text" id="share-url" readonly />
+				<div class="share-rename-buttons">
+					<button id="share-close-btn" class="btn-secondary">Done</button>
+					<button id="share-copy-btn" class="btn-primary">Copy link</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- Rename community scene -->
+		<div id="rename-modal">
+			<div id="rename-modal-inner">
+				<h3>Rename Scene</h3>
+				<label for="rename-name">Scene Name</label>
+				<input type="text" id="rename-name" autocomplete="off" />
+				<div class="share-rename-buttons">
+					<button id="rename-cancel-btn" class="btn-secondary">Cancel</button>
+					<button id="rename-confirm-btn" class="btn-primary">Save</button>
 				</div>
 			</div>
 		</div>
@@ -1009,6 +1158,7 @@
 		<div class="dchat-resize corner corner-se" data-dir="se"></div>
 	</div>
 	<button id="desktop-chat-reopen">Show Chat</button>
+	<a id="editor-link" href="/">Open in editor</a>
 
 	<script type="importmap">
 	{
