@@ -523,10 +523,8 @@ async function enterMobileXRMode(mode) {
 		// top of this file) so the transparent canvas shows the video behind
 		// it - same trick used for real WebXR AR passthrough.
 		isVRMode = false;
-		applyEnvironmentMode();
 	} else {
 		isVRMode = true;
-		applyEnvironmentMode();
 	}
 
 	window.addEventListener('deviceorientation', onDeviceOrientation);
@@ -544,6 +542,8 @@ async function enterMobileXRMode(mode) {
 	arCameraBtn.hidden = true;
 	mobileXRExitBtn.hidden = false;
 	mobileXRWalkBtn.hidden = false;
+	applyEnvironmentMode();
+	renderDomEnv();
 	updateStatus(mode === 'cardboard' ? 'Cardboard VR active' : 'AR mode active', 'connected');
 }
 
@@ -572,6 +572,7 @@ function exitMobileXRMode() {
 	mobileXRWalkBtn.hidden = true;
 	isVRMode = false;
 	applyEnvironmentMode();
+	renderDomEnv();
 	updateStatus('Ready', '');
 	refreshMobileXRButtons();
 }
@@ -1496,11 +1497,26 @@ function renderDomEnv() {
 		variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
 	}));
 	mountButtonsToDOM(dchatEnvModeMount, buttons, { width: 256, height: 40, gap: 6, fontSize: 13 }, handleMenuAction);
-	dchatEnvControls.classList.toggle('disabled', !isVRMode);
+	const colorEnabled = envColorControlsEnabled();
+	if (dchatEnvControls) dchatEnvControls.classList.toggle('disabled', !colorEnabled);
+	const note = dchatEnvControls && dchatEnvControls.querySelector('.dchat-disabled-note');
+	if (note) {
+		note.style.display = colorEnabled ? 'none' : '';
+		note.textContent = colorEnabled
+			? ''
+			: 'Background color is unavailable while AR/VR mode is active.';
+	}
 	const hex = hslToHex(vrBgHue, vrBgSat, vrBgLight);
-	dchatColorPicker.value = hex;
-	dchatColorPreview.style.background = hex;
-	dchatBrightness.value = Math.round(vrBgLight * 100);
+	if (dchatColorPicker) dchatColorPicker.value = hex;
+	if (dchatColorPreview) dchatColorPreview.style.background = hex;
+	if (dchatBrightness) dchatBrightness.value = Math.round(vrBgLight * 100);
+}
+
+/** Color picker is for desktop / mobile browser viewing — not while an AR/VR session is active. */
+function envColorControlsEnabled() {
+	if (typeof mobileXRMode !== 'undefined' && mobileXRMode) return false;
+	if (renderer && renderer.xr && renderer.xr.isPresenting) return false;
+	return true;
 }
 
 function renderSidePanel() {
@@ -1641,14 +1657,36 @@ function renderSidePanel() {
 }
 
 function applyEnvironmentMode() {
-	if (isVRMode) {
-		const color = new THREE.Color();
-		color.setHSL(vrBgHue / 360, vrBgSat, vrBgLight);
+	const color = new THREE.Color();
+	color.setHSL(vrBgHue / 360, vrBgSat, vrBgLight);
+
+	const inMobileXR = typeof mobileXRMode !== 'undefined' && !!mobileXRMode;
+	const inWebXR = !!(renderer && renderer.xr && renderer.xr.isPresenting);
+
+	// Live AR passthrough (mobile AR camera or WebXR AR): keep transparent.
+	if (mobileXRMode === 'ar' || (inWebXR && !isVRMode)) {
+		if (vrSkybox) vrSkybox.visible = false;
+		scene.background = null;
+		renderer.setClearColor(0x000000, 0.0);
+		return;
+	}
+
+	// Desktop / mobile browser (not in an XR session): solid scene background
+	// so Environment tab color changes are visible immediately.
+	if (!inWebXR && !inMobileXR) {
+		scene.background = color.clone();
+		if (vrSkybox) vrSkybox.visible = false;
+		renderer.setClearColor(color, 1);
+		return;
+	}
+
+	// Immersive VR / Cardboard: colored skybox.
+	if (vrSkybox) {
 		vrSkybox.material.color.copy(color);
 		vrSkybox.visible = true;
-	} else {
-		vrSkybox.visible = false;
 	}
+	scene.background = null;
+	renderer.setClearColor(0x000000, 0.0);
 }
 
 function handleSidePanelHit(uv) {
@@ -4522,6 +4560,7 @@ renderer.xr.addEventListener('sessionstart', () => {
 		applyEnvironmentMode();
 		renderSidePanel();
 	}
+	renderDomEnv();
 });
 
 renderer.xr.addEventListener('sessionend', () => {
@@ -4530,6 +4569,7 @@ renderer.xr.addEventListener('sessionend', () => {
 	isVRMode = false;
 	applyEnvironmentMode();
 	renderSidePanel();
+	renderDomEnv();
 	setImmersiveUiMode(false);
 });
 
@@ -4546,6 +4586,7 @@ createUiToggle();
 // Start in windowed (non-XR) mode: the desktop chat window is the UI, and the
 // legacy 3D canvas panels stay hidden until an AR/VR session starts.
 setImmersiveUiMode(false);
+applyEnvironmentMode();
 
 // Populate the community list (and auto-load /s/:id or /e/:id / ?scene= shares).
 // Runs after setImmersiveUiMode so display-only can hide the desktop chrome cleanly.
