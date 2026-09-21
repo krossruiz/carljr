@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { XRButton } from './threejsAddons/XRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { buildButtonLayout, drawButtonsToCanvas, hitTestButtons, mountButtonsToDOM } from './menuSystem.js';
 
 // ============================================================================
@@ -55,6 +56,23 @@ orbitControls.dampingFactor = 0.08;
 orbitControls.minDistance = 0.5;
 orbitControls.maxDistance = 50;
 orbitControls.update();
+
+// Walk-in-AR only: finger-driven transform gizmo for arPlacementRoot (not WebXR).
+const arTransformControls = new TransformControls(camera, renderer.domElement);
+arTransformControls.enabled = false;
+arTransformControls.setMode('translate');
+arTransformControls.setSize(1.35);
+arTransformControls.space = 'world';
+arTransformControls.showY = false; // keep Move on the ground plane by default
+let arGizmoVisible = false;
+let arGizmoDragging = false;
+arTransformControls.addEventListener('dragging-changed', (e) => {
+	arGizmoDragging = !!e.value;
+});
+const arTransformHelper = arTransformControls.getHelper();
+arTransformHelper.name = 'arTransformHelper';
+arTransformHelper.visible = false;
+scene.add(arTransformHelper);
 
 // ============================================================================
 // DOM Elements
@@ -505,6 +523,12 @@ const cardboardBtn = document.getElementById('cardboard-btn');
 const arCameraBtn = document.getElementById('ar-camera-btn');
 const mobileXRExitBtn = document.getElementById('mobile-xr-exit');
 const mobileXRWalkBtn = document.getElementById('mobile-xr-walk');
+const mobileXrGizmoBar = document.getElementById('mobile-xr-gizmo-bar');
+const mobileXrGizmoToggle = document.getElementById('mobile-xr-gizmo-toggle');
+const mobileXrGizmoModes = document.getElementById('mobile-xr-gizmo-modes');
+const mobileXrGizmoTranslate = document.getElementById('mobile-xr-gizmo-translate');
+const mobileXrGizmoRotate = document.getElementById('mobile-xr-gizmo-rotate');
+const mobileXrGizmoScale = document.getElementById('mobile-xr-gizmo-scale');
 const arVideoEl = document.getElementById('ar-camera-feed');
 
 const isMobileUA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -591,6 +615,7 @@ function isArUiTouchTarget(target) {
 	return !!(
 		target.closest('#mobile-xr-exit') ||
 		target.closest('#mobile-xr-walk') ||
+		target.closest('#mobile-xr-gizmo-bar') ||
 		target.closest('#desktop-chat') ||
 		target.closest('#desktop-chat-reopen') ||
 		target.closest('#files-picker-modal') ||
@@ -617,7 +642,7 @@ function getWorldContentParent() {
 function gatherMovableSceneRoots() {
 	const roots = [];
 	for (const child of [...scene.children]) {
-		if (child === player || child === arPlacementRoot) continue;
+		if (child === player || child === arPlacementRoot || child === arTransformHelper) continue;
 		if (systemObjectIds.has(child.uuid)) continue;
 		roots.push(child);
 	}
@@ -653,6 +678,49 @@ function placeArAnchorInFrontOfCamera(distance = 1.6) {
 	arPlacementRoot.rotation.set(0, Math.atan2(_arFwd.x, _arFwd.z), 0);
 }
 
+function setArGizmoVisible(visible) {
+	// Smartphones/tablets Walk-in-AR only — never in WebXR.
+	if (renderer.xr.isPresenting || mobileXRMode !== 'ar') visible = false;
+	arGizmoVisible = !!visible;
+	if (arGizmoVisible) {
+		arTransformControls.attach(arPlacementRoot);
+		arTransformControls.enabled = true;
+		arTransformHelper.visible = true;
+	} else {
+		arTransformControls.detach();
+		arTransformControls.enabled = false;
+		arTransformHelper.visible = false;
+		arGizmoDragging = false;
+	}
+	if (mobileXrGizmoToggle) {
+		mobileXrGizmoToggle.textContent = arGizmoVisible ? 'Hide Gizmo' : 'Show Gizmo';
+		mobileXrGizmoToggle.classList.toggle('active', arGizmoVisible);
+	}
+	if (mobileXrGizmoModes) mobileXrGizmoModes.classList.toggle('visible', arGizmoVisible);
+}
+
+function setArGizmoMode(mode) {
+	const m = (mode === 'rotate' || mode === 'scale') ? mode : 'translate';
+	arTransformControls.setMode(m);
+	if (m === 'translate') {
+		arTransformControls.showX = true;
+		arTransformControls.showY = false;
+		arTransformControls.showZ = true;
+	} else if (m === 'rotate') {
+		arTransformControls.showX = false;
+		arTransformControls.showY = true;
+		arTransformControls.showZ = false;
+	} else {
+		arTransformControls.showX = true;
+		arTransformControls.showY = true;
+		arTransformControls.showZ = true;
+	}
+	for (const btn of [mobileXrGizmoTranslate, mobileXrGizmoRotate, mobileXrGizmoScale]) {
+		if (!btn) continue;
+		btn.classList.toggle('active', btn.dataset.mode === m);
+	}
+}
+
 function setArPlacementActive(active) {
 	ensureArPlacementMarker();
 	if (arPlacementMarker) arPlacementMarker.visible = !!active;
@@ -665,10 +733,16 @@ function setArPlacementActive(active) {
 		orbitControls.enablePan = false;
 		orbitControls.enableZoom = false;
 		renderer.domElement.style.touchAction = 'none';
+		if (mobileXrGizmoBar) mobileXrGizmoBar.classList.add('visible');
+		setArGizmoMode('translate');
+		setArGizmoVisible(true);
 	} else {
+		setArGizmoVisible(false);
+		if (mobileXrGizmoBar) mobileXrGizmoBar.classList.remove('visible');
 		releaseArPlacementContentToScene();
 		arPlacementRoot.position.set(0, 0, 0);
 		arPlacementRoot.rotation.set(0, 0, 0);
+		arPlacementRoot.scale.set(1, 1, 1);
 		arDragging = false;
 		arDragPointerId = null;
 		orbitControls.enableRotate = true;
@@ -679,8 +753,11 @@ function setArPlacementActive(active) {
 }
 
 function onArPointerDown(e) {
-	if (mobileXRMode !== 'ar') return;
+	if (mobileXRMode !== 'ar' || renderer.xr.isPresenting) return;
 	if (isArUiTouchTarget(e.target)) return;
+	// When the transform gizmo is shown, placement goes through gizmo handles —
+	// free ground drag is off so it doesn't fight axis grabs.
+	if (arGizmoVisible || arGizmoDragging) return;
 	if (!raycastGround(e.clientX, e.clientY, _arLastHit)) return;
 	arDragging = true;
 	arDragPointerId = e.pointerId;
@@ -755,7 +832,7 @@ async function enterMobileXRMode(mode) {
 	mobileXRWalkBtn.hidden = false;
 	if (mode === 'ar') {
 		setArPlacementActive(true);
-		updateStatus('Walk in AR — drag to move scene · walk to look around', 'connected');
+		updateStatus('Walk in AR — use gizmo or hide it to free-drag · walk to look', 'connected');
 	} else {
 		updateStatus('Cardboard VR active', 'connected');
 	}
@@ -807,6 +884,15 @@ mobileXRWalkBtn.addEventListener('touchcancel', (e) => { e.preventDefault(); mob
 mobileXRWalkBtn.addEventListener('mousedown', () => { mobileMoveHeld = true; });
 mobileXRWalkBtn.addEventListener('mouseup', () => { mobileMoveHeld = false; });
 mobileXRWalkBtn.addEventListener('mouseleave', () => { mobileMoveHeld = false; });
+
+mobileXrGizmoToggle?.addEventListener('click', () => {
+	if (mobileXRMode !== 'ar' || renderer.xr.isPresenting) return;
+	setArGizmoVisible(!arGizmoVisible);
+});
+mobileXrGizmoTranslate?.addEventListener('click', () => setArGizmoMode('translate'));
+mobileXrGizmoRotate?.addEventListener('click', () => setArGizmoMode('rotate'));
+mobileXrGizmoScale?.addEventListener('click', () => setArGizmoMode('scale'));
+
 
 // ============================================================================
 // Lighting
@@ -1969,6 +2055,9 @@ let pendingExportCombined = false;
 function snapshotSystemObjects() {
 	systemObjectIds.clear();
 	scene.traverse(obj => systemObjectIds.add(obj.uuid));
+	if (typeof arTransformHelper !== 'undefined' && arTransformHelper) {
+		arTransformHelper.traverse(obj => systemObjectIds.add(obj.uuid));
+	}
 	systemOverlayIds.clear();
 	const overlay = document.getElementById('overlay-root');
 	for (const child of overlay.children) {

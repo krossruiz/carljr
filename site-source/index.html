@@ -177,6 +177,50 @@
 		}
 		#mobile-xr-walk:active { background: #3730a3; }
 
+		/* Walk-in-AR transform gizmo toolbar (phones/tablets only) */
+		#mobile-xr-gizmo-bar {
+			position: fixed;
+			top: max(12px, env(safe-area-inset-top, 0px));
+			left: max(12px, env(safe-area-inset-left, 0px));
+			right: auto;
+			z-index: 1000;
+			display: none;
+			flex-direction: column;
+			gap: 8px;
+			align-items: flex-start;
+			max-width: min(70vw, 220px);
+		}
+		#mobile-xr-gizmo-bar.visible { display: flex; }
+		#mobile-xr-gizmo-bar button {
+			border: 2px solid #12121a;
+			border-radius: 12px;
+			background: #f4f4f8;
+			color: #12121a;
+			font: 700 13px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+			padding: 10px 12px;
+			cursor: pointer;
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+			-webkit-tap-highlight-color: transparent;
+			touch-action: manipulation;
+		}
+		#mobile-xr-gizmo-bar button.active {
+			background: #4f46e5;
+			color: #fff;
+			border-color: #312e81;
+		}
+		#mobile-xr-gizmo-modes {
+			display: none;
+			flex-wrap: wrap;
+			gap: 6px;
+		}
+		#mobile-xr-gizmo-modes.visible { display: flex; }
+		#mobile-xr-gizmo-modes button {
+			padding: 8px 10px;
+			font-size: 12px;
+			min-width: 64px;
+		}
+
+
 		/* DOM Overlay for AR/VR chat interface (slim bar shown only in an XR session) */
 		#chat-overlay {
 			position: fixed;
@@ -1404,7 +1448,8 @@
 		body.display-only #ar-camera-btn,
 		body.display-only #XRButton,
 		body.display-only #mobile-xr-exit,
-		body.display-only #mobile-xr-walk {
+		body.display-only #mobile-xr-walk,
+		body.display-only #mobile-xr-gizmo-bar {
 			display: none !important;
 		}
 		body.display-only #editor-link { display: none !important; }
@@ -1433,6 +1478,14 @@
 	<!-- In-session controls for both mobile modes above (hidden otherwise) -->
 	<button id="mobile-xr-exit" hidden>&times;</button>
 	<button id="mobile-xr-walk" hidden>Hold to Walk</button>
+	<div id="mobile-xr-gizmo-bar" aria-label="AR transform gizmo">
+		<button type="button" id="mobile-xr-gizmo-toggle">Show Gizmo</button>
+		<div id="mobile-xr-gizmo-modes">
+			<button type="button" id="mobile-xr-gizmo-translate" class="active" data-mode="translate">Move</button>
+			<button type="button" id="mobile-xr-gizmo-rotate" data-mode="rotate">Rotate</button>
+			<button type="button" id="mobile-xr-gizmo-scale" data-mode="scale">Scale</button>
+		</div>
+	</div>
 
 	<!-- DOM Overlay elements for AR -->
 	<div id="overlay-root">
