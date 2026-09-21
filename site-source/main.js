@@ -57,22 +57,44 @@ orbitControls.minDistance = 0.5;
 orbitControls.maxDistance = 50;
 orbitControls.update();
 
-// Walk-in-AR only: finger-driven transform gizmo for arPlacementRoot (not WebXR).
-const arTransformControls = new TransformControls(camera, renderer.domElement);
-arTransformControls.enabled = false;
-arTransformControls.setMode('translate');
-arTransformControls.setSize(1.35);
-arTransformControls.space = 'world';
-arTransformControls.showY = true; // Move includes up/down (Y) as well as XZ
+// Walk-in-AR only: finger-driven transform gizmos for arPlacementRoot (not WebXR).
+// Three controls so "All" can show translate + rotate + scale handles together.
 let arGizmoVisible = false;
 let arGizmoDragging = false;
-arTransformControls.addEventListener('dragging-changed', (e) => {
-	arGizmoDragging = !!e.value;
-});
-const arTransformHelper = arTransformControls.getHelper();
-arTransformHelper.name = 'arTransformHelper';
-arTransformHelper.visible = false;
-scene.add(arTransformHelper);
+let arGizmoMode = 'all'; // 'all' | 'translate' | 'rotate' | 'scale'
+const arGizmoHelpers = [];
+const arTransformByMode = {};
+for (const mode of ['translate', 'rotate', 'scale']) {
+	const ctrl = new TransformControls(camera, renderer.domElement);
+	ctrl.enabled = false;
+	ctrl.setMode(mode);
+	ctrl.setSize(mode === 'scale' ? 1.2 : 1.35);
+	ctrl.space = 'world';
+	ctrl.showX = true;
+	ctrl.showY = true;
+	ctrl.showZ = true;
+	ctrl.addEventListener('dragging-changed', (e) => {
+		arGizmoDragging = !!e.value;
+		// While one handle is grabbed, silence the sibling gizmos so they don't fight.
+		for (const other of Object.values(arTransformByMode)) {
+			if (other === ctrl) continue;
+			if (e.value) {
+				other.enabled = false;
+			} else if (arGizmoVisible) {
+				other.enabled = (arGizmoMode === 'all' || other.getMode() === arGizmoMode);
+			}
+		}
+	});
+	const helper = ctrl.getHelper();
+	helper.name = `arTransformHelper-${mode}`;
+	helper.visible = false;
+	scene.add(helper);
+	arGizmoHelpers.push(helper);
+	arTransformByMode[mode] = ctrl;
+}
+// Back-compat aliases used by gather/system-object skips
+const arTransformControls = arTransformByMode.translate;
+const arTransformHelper = arGizmoHelpers[0];
 
 // ============================================================================
 // DOM Elements
@@ -526,6 +548,7 @@ const mobileXRWalkBtn = document.getElementById('mobile-xr-walk');
 const mobileXrGizmoBar = document.getElementById('mobile-xr-gizmo-bar');
 const mobileXrGizmoToggle = document.getElementById('mobile-xr-gizmo-toggle');
 const mobileXrGizmoModes = document.getElementById('mobile-xr-gizmo-modes');
+const mobileXrGizmoAll = document.getElementById('mobile-xr-gizmo-all');
 const mobileXrGizmoTranslate = document.getElementById('mobile-xr-gizmo-translate');
 const mobileXrGizmoRotate = document.getElementById('mobile-xr-gizmo-rotate');
 const mobileXrGizmoScale = document.getElementById('mobile-xr-gizmo-scale');
@@ -642,7 +665,8 @@ function getWorldContentParent() {
 function gatherMovableSceneRoots() {
 	const roots = [];
 	for (const child of [...scene.children]) {
-		if (child === player || child === arPlacementRoot || child === arTransformHelper) continue;
+		if (child === player || child === arPlacementRoot) continue;
+		if (arGizmoHelpers.includes(child)) continue;
 		if (systemObjectIds.has(child.uuid)) continue;
 		roots.push(child);
 	}
@@ -678,20 +702,31 @@ function placeArAnchorInFrontOfCamera(distance = 1.6) {
 	arPlacementRoot.rotation.set(0, Math.atan2(_arFwd.x, _arFwd.z), 0);
 }
 
+function applyArGizmoAttachment() {
+	for (const [mode, ctrl] of Object.entries(arTransformByMode)) {
+		const helper = ctrl.getHelper();
+		const want = arGizmoVisible && (arGizmoMode === 'all' || arGizmoMode === mode);
+		if (want) {
+			ctrl.attach(arPlacementRoot);
+			ctrl.enabled = !arGizmoDragging || ctrl.dragging;
+			ctrl.showX = true;
+			ctrl.showY = true;
+			ctrl.showZ = true;
+			helper.visible = true;
+		} else {
+			ctrl.detach();
+			ctrl.enabled = false;
+			helper.visible = false;
+		}
+	}
+}
+
 function setArGizmoVisible(visible) {
 	// Smartphones/tablets Walk-in-AR only — never in WebXR.
 	if (renderer.xr.isPresenting || mobileXRMode !== 'ar') visible = false;
 	arGizmoVisible = !!visible;
-	if (arGizmoVisible) {
-		arTransformControls.attach(arPlacementRoot);
-		arTransformControls.enabled = true;
-		arTransformHelper.visible = true;
-	} else {
-		arTransformControls.detach();
-		arTransformControls.enabled = false;
-		arTransformHelper.visible = false;
-		arGizmoDragging = false;
-	}
+	if (!arGizmoVisible) arGizmoDragging = false;
+	applyArGizmoAttachment();
 	if (mobileXrGizmoToggle) {
 		mobileXrGizmoToggle.textContent = arGizmoVisible ? 'Hide Gizmo' : 'Show Gizmo';
 		mobileXrGizmoToggle.classList.toggle('active', arGizmoVisible);
@@ -700,22 +735,10 @@ function setArGizmoVisible(visible) {
 }
 
 function setArGizmoMode(mode) {
-	const m = (mode === 'rotate' || mode === 'scale') ? mode : 'translate';
-	arTransformControls.setMode(m);
-	if (m === 'translate') {
-		arTransformControls.showX = true;
-		arTransformControls.showY = true;
-		arTransformControls.showZ = true;
-	} else if (m === 'rotate') {
-		arTransformControls.showX = false;
-		arTransformControls.showY = true;
-		arTransformControls.showZ = false;
-	} else {
-		arTransformControls.showX = true;
-		arTransformControls.showY = true;
-		arTransformControls.showZ = true;
-	}
-	for (const btn of [mobileXrGizmoTranslate, mobileXrGizmoRotate, mobileXrGizmoScale]) {
+	const m = (mode === 'all' || mode === 'rotate' || mode === 'scale') ? mode : 'translate';
+	arGizmoMode = m;
+	applyArGizmoAttachment();
+	for (const btn of [mobileXrGizmoAll, mobileXrGizmoTranslate, mobileXrGizmoRotate, mobileXrGizmoScale]) {
 		if (!btn) continue;
 		btn.classList.toggle('active', btn.dataset.mode === m);
 	}
@@ -734,7 +757,7 @@ function setArPlacementActive(active) {
 		orbitControls.enableZoom = false;
 		renderer.domElement.style.touchAction = 'none';
 		if (mobileXrGizmoBar) mobileXrGizmoBar.classList.add('visible');
-		setArGizmoMode('translate');
+		setArGizmoMode('all');
 		setArGizmoVisible(true);
 	} else {
 		setArGizmoVisible(false);
@@ -889,6 +912,7 @@ mobileXrGizmoToggle?.addEventListener('click', () => {
 	if (mobileXRMode !== 'ar' || renderer.xr.isPresenting) return;
 	setArGizmoVisible(!arGizmoVisible);
 });
+mobileXrGizmoAll?.addEventListener('click', () => setArGizmoMode('all'));
 mobileXrGizmoTranslate?.addEventListener('click', () => setArGizmoMode('translate'));
 mobileXrGizmoRotate?.addEventListener('click', () => setArGizmoMode('rotate'));
 mobileXrGizmoScale?.addEventListener('click', () => setArGizmoMode('scale'));
@@ -2055,8 +2079,8 @@ let pendingExportCombined = false;
 function snapshotSystemObjects() {
 	systemObjectIds.clear();
 	scene.traverse(obj => systemObjectIds.add(obj.uuid));
-	if (typeof arTransformHelper !== 'undefined' && arTransformHelper) {
-		arTransformHelper.traverse(obj => systemObjectIds.add(obj.uuid));
+	for (const helper of arGizmoHelpers) {
+		helper.traverse(obj => systemObjectIds.add(obj.uuid));
 	}
 	systemOverlayIds.clear();
 	const overlay = document.getElementById('overlay-root');
