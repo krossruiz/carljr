@@ -62,8 +62,8 @@ class XRButton {
 			button.style.display = '';
 
 			button.style.cursor = 'pointer';
-			button.style.left = 'calc(50% - 50px)';
-			button.style.width = '100px';
+			button.style.left = '50%';
+			button.style.width = '';
 
 			button.textContent = isAR ? 'ENTER AR' : 'ENTER VR';
 
@@ -125,8 +125,8 @@ class XRButton {
 			button.style.display = '';
 
 			button.style.cursor = 'auto';
-			button.style.left = 'calc(50% - 75px)';
-			button.style.width = '150px';
+			button.style.left = '50%';
+			button.style.width = '';
 
 			button.onmouseenter = null;
 			button.onmouseleave = null;
@@ -155,18 +155,24 @@ class XRButton {
 
 		function stylizeElement( element ) {
 
-			element.style.position = 'absolute';
-			element.style.bottom = '20px';
-			element.style.padding = '12px 6px';
-			element.style.border = '1px solid #fff';
-			element.style.borderRadius = '4px';
-			element.style.background = 'rgba(0,0,0,0.1)';
-			element.style.color = '#fff';
-			element.style.font = 'normal 13px sans-serif';
+			// Visuals mostly live in index.html (#XRButton) for responsive /
+			// high-contrast mobile styles; keep only layout-critical inline bits.
+			element.classList.add( 'xr-entry-btn' );
+			element.style.position = 'fixed';
+			element.style.bottom = '';
+			element.style.padding = '';
+			element.style.border = '';
+			element.style.borderRadius = '';
+			element.style.background = '#f4f4f8';
+			element.style.color = '#12121a';
+			element.style.font = '600 14px/1.2 -apple-system, BlinkMacSystemFont, sans-serif';
 			element.style.textAlign = 'center';
-			element.style.opacity = '0.5';
+			element.style.opacity = '1';
 			element.style.outline = 'none';
 			element.style.zIndex = '999';
+			element.style.boxSizing = 'border-box';
+			element.style.cursor = 'pointer';
+			element.style.webkitTapHighlightColor = 'transparent';
 
 		}
 
@@ -214,8 +220,8 @@ class XRButton {
 
 			}
 
-			message.style.left = 'calc(50% - 90px)';
-			message.style.width = '180px';
+			message.style.left = '50%';
+			message.style.width = '';
 			message.style.textDecoration = 'none';
 
 			stylizeElement( message );
