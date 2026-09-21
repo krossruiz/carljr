@@ -138,7 +138,7 @@ const THEME_BUTTONS = [
 // Mini in-panel tabs drawn at the top of the XR scene panel, since it has
 // no separate mesh for Community (unlike desktop's tab bar) - see
 // SCENE_PANEL_SUB_TABS usage in renderScenePanel()/handleScenePanelHit().
-// Themes is desktop-primary (theme chat + apply); XR gets Apply list only.
+// Themes list/apply is available in XR; theme restyle chat lives under desktop Chat → Theme.
 const SCENE_PANEL_SUB_TABS = [
 	{ id: 'scenes', label: 'Scenes', action: 'panel:scenes' },
 	{ id: 'community', label: 'Community', action: 'panel:community' },
@@ -362,7 +362,8 @@ let sceneFileExtension = 'vrscene';
 let scenePanelSubTab = 'scenes'; // 'scenes' | 'community' | 'themes' - see SCENE_PANEL_SUB_TABS
 let communityScenesCache = []; // last-fetched list, so the XR panel has something to draw without re-fetching every frame
 let communityThemesCache = [];
-let communitySection = 'scenes'; // desktop Community tab: 'scenes' | 'themes'
+let communitySection = 'scenes'; // Community tab: 'scenes' | 'themes'
+let chatSection = 'scene'; // Chat tab: 'scene' | 'theme' // desktop Community tab: 'scenes' | 'themes'
 let displayOnlyMode = false; // share URL opened with editor chrome stripped
 let pendingShare = null; // share modal payload { id, name, editorUrl, viewUrl }
 let codeEditorDirty = false; // user has unsaved edits in Code tab
@@ -2489,10 +2490,31 @@ function applyTheme(theme, { announce = false } = {}) {
 		cssVars: { ...vars },
 		customCSS: custom
 	};
-	try {
-		localStorage.setItem('carljr-theme', JSON.stringify(currentTheme));
-	} catch { /* ignore quota */ }
+	cacheLastTheme(currentTheme);
 	if (announce) updateStatus(`Theme: ${currentTheme.name}`, 'connected');
+}
+
+const THEME_CACHE_KEY = 'carljr-theme';
+
+function cacheLastTheme(theme) {
+	if (!theme || !theme.cssVars) return;
+	try {
+		localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({
+			name: theme.name || 'Custom',
+			cssVars: { ...theme.cssVars },
+			customCSS: typeof theme.customCSS === 'string' ? theme.customCSS : ''
+		}));
+	} catch { /* ignore quota */ }
+}
+
+function loadCachedTheme() {
+	try {
+		const raw = localStorage.getItem(THEME_CACHE_KEY);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw);
+		if (parsed && parsed.cssVars && typeof parsed.cssVars === 'object') return parsed;
+	} catch { /* ignore */ }
+	return null;
 }
 
 function snapshotCurrentTheme(name) {
@@ -2551,7 +2573,7 @@ function parseThemeJsonBlocks(text) {
 
 function setCommunitySection(section) {
 	communitySection = section === 'themes' ? 'themes' : 'scenes';
-	document.querySelectorAll('.dchat-subtab').forEach(btn => {
+	document.querySelectorAll('#dchat-community-subtabs .dchat-subtab').forEach(btn => {
 		btn.classList.toggle('active', btn.dataset.communitySection === communitySection);
 	});
 	const scenesSec = document.getElementById('dchat-community-section-scenes');
@@ -2560,6 +2582,17 @@ function setCommunitySection(section) {
 	if (themesSec) themesSec.classList.toggle('active', communitySection === 'themes');
 	if (communitySection === 'themes') refreshCommunityThemes();
 	else refreshCommunityScenes();
+}
+
+function setChatSection(section) {
+	chatSection = section === 'theme' ? 'theme' : 'scene';
+	document.querySelectorAll('#dchat-chat-subtabs .dchat-subtab').forEach(btn => {
+		btn.classList.toggle('active', btn.dataset.chatSection === chatSection);
+	});
+	const sceneSec = document.getElementById('dchat-chat-section-scene');
+	const themeSec = document.getElementById('dchat-chat-section-theme');
+	if (sceneSec) sceneSec.classList.toggle('active', chatSection === 'scene');
+	if (themeSec) themeSec.classList.toggle('active', chatSection === 'theme');
 }
 
 function uploadCurrentThemeToCommunity() {
@@ -2574,6 +2607,8 @@ function uploadCurrentThemeToCommunity() {
 		body: JSON.stringify(theme)
 	}).then(res => res.json().then(data => ({ ok: res.ok, data }))).then(({ ok, data }) => {
 		if (!ok || data.error) throw new Error(data.error || 'Upload failed');
+		currentTheme = theme;
+		cacheLastTheme(theme);
 		updateStatus(`Uploaded theme "${data.theme?.name || theme.name}"`, 'connected');
 		refreshCommunityThemes();
 	}).catch(err => {
@@ -4409,7 +4444,7 @@ document.addEventListener('keydown', (e) => {
 	desktopChat.style.top = `${top}px`;
 });
 
-// Tabs: Chat / Environment / Scenes / Code / Community (Scenes|Themes sections).
+// Tabs: Chat (Scene|Theme) / Environment / Scenes / Code / Community (Scenes|Themes).
 document.querySelectorAll('.dchat-tab').forEach(tab => {
 	tab.addEventListener('click', () => {
 		document.querySelectorAll('.dchat-tab').forEach(t => t.classList.remove('active'));
@@ -4447,8 +4482,11 @@ if (dchatCodeLive) {
 }
 syncCodeEditorFromState({ force: true });
 
-document.querySelectorAll('.dchat-subtab').forEach(btn => {
+document.querySelectorAll('#dchat-community-subtabs .dchat-subtab').forEach(btn => {
 	btn.addEventListener('click', () => setCommunitySection(btn.dataset.communitySection));
+});
+document.querySelectorAll('#dchat-chat-subtabs .dchat-subtab').forEach(btn => {
+	btn.addEventListener('click', () => setChatSection(btn.dataset.chatSection));
 });
 
 if (dchatThemeChatSend) dchatThemeChatSend.addEventListener('click', sendThemeChat);
@@ -4590,14 +4628,10 @@ applyEnvironmentMode();
 
 // Populate the community list (and auto-load /s/:id or /e/:id / ?scene= shares).
 // Runs after setImmersiveUiMode so display-only can hide the desktop chrome cleanly.
-// Restore last applied editor theme (chrome only).
-try {
-	const saved = localStorage.getItem('carljr-theme');
-	if (saved) applyTheme(JSON.parse(saved));
-	else currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
-} catch {
-	currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
-}
+// Restore last cached editor theme (chrome only) for future sessions.
+const cachedTheme = loadCachedTheme();
+if (cachedTheme) applyTheme(cachedTheme);
+else currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
 
 bootSharedScene();
 

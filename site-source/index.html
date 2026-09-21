@@ -1029,12 +1029,16 @@
 			border-color: transparent;
 		}
 
-		/* Community Scenes | Themes sub-tabs */
+		/* Nested sub-tabs (Chat Scene|Theme, Community Scenes|Themes) */
+		#dchat-chat-subtabs,
 		#dchat-community-subtabs {
 			display: flex;
 			gap: 6px;
-			padding: 0 0 10px;
+			padding: 8px 12px 0;
 			flex-shrink: 0;
+		}
+		#dchat-community-subtabs {
+			padding: 0 0 10px;
 		}
 		.dchat-subtab {
 			flex: 1;
@@ -1053,8 +1057,10 @@
 			color: #fff;
 			border-color: transparent;
 		}
-		.dchat-community-section { display: none; flex-direction: column; flex: 1; min-height: 0; }
-		.dchat-community-section.active { display: flex; }
+		.dchat-community-section,
+		.dchat-chat-section { display: none; flex-direction: column; flex: 1; min-height: 0; }
+		.dchat-community-section.active,
+		.dchat-chat-section.active { display: flex; }
 
 		#dchat-themes-buttons { flex-shrink: 0; }
 		#dchat-themes-list {
@@ -1070,15 +1076,12 @@
 		#dchat-themes-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
 
 		#dchat-theme-chat {
-			flex-shrink: 0;
+			flex: 1;
 			display: flex;
 			flex-direction: column;
-			gap: 6px;
-			margin-top: 10px;
-			padding-top: 10px;
-			border-top: 1px solid rgba(255,255,255,0.08);
-			max-height: 42%;
-			min-height: 120px;
+			gap: 8px;
+			padding: 10px 12px 12px;
+			min-height: 0;
 		}
 		#dchat-theme-chat-messages {
 			flex: 1;
@@ -1371,22 +1374,42 @@
 		</div>
 
 		<div id="dchat-panel-chat" class="dchat-panel active">
-			<div id="desktop-model-row">
-				<label for="desktop-model-select">Model:</label>
-				<select id="desktop-model-select"></select>
+			<div id="dchat-chat-subtabs">
+				<button type="button" class="dchat-subtab active" data-chat-section="scene">Scene</button>
+				<button type="button" class="dchat-subtab" data-chat-section="theme">Theme</button>
 			</div>
-			<div id="desktop-ollama-model-row" style="display:none;">
-				<label for="desktop-ollama-model-select">Local model:</label>
-				<select id="desktop-ollama-model-select"></select>
+
+			<div id="dchat-chat-section-scene" class="dchat-chat-section active">
+				<div id="desktop-model-row">
+					<label for="desktop-model-select">Model:</label>
+					<select id="desktop-model-select"></select>
+				</div>
+				<div id="desktop-ollama-model-row" style="display:none;">
+					<label for="desktop-ollama-model-select">Local model:</label>
+					<select id="desktop-ollama-model-select"></select>
+				</div>
+				<div id="desktop-chat-messages"></div>
+				<div id="desktop-attachments" hidden></div>
+				<div id="desktop-chat-input-row">
+					<input type="file" id="desktop-attach-input" multiple accept="image/*,.txt,.md,.markdown,.json,.js,.jsx,.ts,.tsx,.py,.csv,.html,.htm,.css,.xml,.yaml,.yml,.log,.c,.cpp,.h,.hpp,.java,.go,.rs,.sh,.sql,.ini,.toml" hidden />
+					<button id="desktop-attach-button" title="Attach images or text files">📎</button>
+					<input type="text" id="desktop-chat-input" placeholder="Ask about the scene..." autocomplete="off" />
+					<button id="desktop-mic-button" title="Toggle always-on voice input">🎤</button>
+					<button id="desktop-send-button">Send</button>
+				</div>
 			</div>
-			<div id="desktop-chat-messages"></div>
-			<div id="desktop-attachments" hidden></div>
-			<div id="desktop-chat-input-row">
-				<input type="file" id="desktop-attach-input" multiple accept="image/*,.txt,.md,.markdown,.json,.js,.jsx,.ts,.tsx,.py,.csv,.html,.htm,.css,.xml,.yaml,.yml,.log,.c,.cpp,.h,.hpp,.java,.go,.rs,.sh,.sql,.ini,.toml" hidden />
-				<button id="desktop-attach-button" title="Attach images or text files">📎</button>
-				<input type="text" id="desktop-chat-input" placeholder="Ask Claude something..." autocomplete="off" />
-				<button id="desktop-mic-button" title="Toggle always-on voice input">🎤</button>
-				<button id="desktop-send-button">Send</button>
+
+			<div id="dchat-chat-section-theme" class="dchat-chat-section">
+				<div id="dchat-theme-chat">
+					<div class="dchat-section-label">Theme restyle chat</div>
+					<div id="dchat-theme-chat-messages">
+						<div class="dchat-theme-msg system">Ask for editor chrome restyles (colors, fonts, panels). The AI returns a theme JSON that applies live — then upload it from Community → Themes. Your last applied theme is restored next visit.</div>
+					</div>
+					<div id="dchat-theme-chat-row">
+						<input type="text" id="dchat-theme-chat-input" placeholder="e.g. dark emerald glass, soft rounded tabs..." autocomplete="off" />
+						<button type="button" id="dchat-theme-chat-send">Send</button>
+					</div>
+				</div>
 			</div>
 		</div>
 
@@ -1469,15 +1492,8 @@
 				<div id="dchat-community-section-themes" class="dchat-community-section">
 					<div id="dchat-themes-buttons"></div>
 					<div id="dchat-themes-list"></div>
-					<div id="dchat-theme-chat">
-						<div class="dchat-section-label">Theme restyle chat</div>
-						<div id="dchat-theme-chat-messages">
-							<div class="dchat-theme-msg system">Ask for editor chrome restyles (colors, fonts, panels). The AI returns a theme JSON that applies live — then upload it to Community Themes.</div>
-						</div>
-						<div id="dchat-theme-chat-row">
-							<input type="text" id="dchat-theme-chat-input" placeholder="e.g. dark emerald glass, soft rounded tabs..." autocomplete="off" />
-							<button type="button" id="dchat-theme-chat-send">Send</button>
-						</div>
+					<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-top:10px;line-height:1.4">
+						Restyle the editor in Chat → Theme, then upload the current theme here to share it.
 					</div>
 				</div>
 			</div>
