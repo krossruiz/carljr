@@ -356,6 +356,7 @@ let scenePanelSubTab = 'scenes'; // 'scenes' | 'community' | 'themes' - see SCEN
 let communityScenesCache = []; // last-fetched list, so the XR panel has something to draw without re-fetching every frame
 let communityThemesCache = [];
 let communitySection = 'scenes'; // desktop Community tab: 'scenes' | 'themes'
+let displayOnlyMode = false; // share URL opened with editor chrome stripped
 let pendingRename = null;
 let pendingRenameKind = 'scene'; // 'scene' | 'theme'
 let currentTheme = null; // last applied theme object { name, cssVars, customCSS }
