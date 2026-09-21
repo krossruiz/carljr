@@ -24,7 +24,7 @@ const PORT = process.env.PORT || 3000;
 // Which model backend to use by default: 'claude', 'openai', or 'ollama'.
 // The client can override this per-request (see the model dropdown in the
 // chat UI) - this is just the fallback when a request doesn't specify one.
-const LLM_BACKEND = (process.env.LLM_BACKEND || 'claude').toLowerCase();
+const LLM_BACKEND = (process.env.LLM_BACKEND || 'openai').toLowerCase();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-6-astra';
 
 // API keys - each backend is only usable if its key is configured. This
@@ -49,7 +49,7 @@ function getAvailableBackends() {
 	return {
 		claude: { label: 'Claude (Sonnet 5)', available: !!CLAUDE_API_KEY },
 		fable: { label: 'Claude (Fable 5.1)', available: !!CLAUDE_API_KEY },
-		openai: { label: `OpenAI (${OPENAI_MODEL})`, available: !!OPENAI_API_KEY },
+	openai: { label: 'GPT6 Astra', available: !!OPENAI_API_KEY },
 		ollama: { label: 'Ollama (runs in your browser, local)', available: true, local: true },
 	};
 }
