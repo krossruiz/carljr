@@ -172,6 +172,14 @@ const ENV_MODE_BUTTONS = [
 const EXIT_XR_BUTTON = [
 	{ id: 'exitXr', label: 'Exit AR/VR', action: 'env:exit', variant: 'warning' }
 ];
+function getLayDownButton() {
+	return {
+		id: 'layDown',
+		label: layDownView ? 'Sit up' : 'Lay down',
+		action: 'env:layDown',
+		variant: layDownView ? 'active' : 'default'
+	};
+}
 const SCENES_BUTTONS = [
 	{ id: 'export', label: 'Export', action: 'scenes:export', variant: 'accent' },
 	{ id: 'importFile', label: 'Import File', action: 'scenes:importFile' },
@@ -234,6 +242,9 @@ function handleMenuAction(action) {
 			break;
 		case 'env:exit':
 			exitXrToDesktop();
+			break;
+		case 'env:layDown':
+			toggleLayDownView();
 			break;
 		case 'scenes:export':
 			showExportModal(false);
@@ -344,6 +355,29 @@ function exitXrToDesktop() {
 		return;
 	}
 	updateStatus('Not in an XR session', '');
+}
+
+/** Apply (or clear) the lay-down pitch on viewOffset. Only active while in
+ *  WebXR / mobile XR so desktop orbit camera stays upright. */
+function applyLayDownView() {
+	if (!viewOffset) return;
+	const inXr = !!(renderer && renderer.xr && renderer.xr.isPresenting) || !!mobileXRMode;
+	viewOffset.rotation.x = (layDownView && inXr) ? -Math.PI / 2 : 0;
+}
+
+function toggleLayDownView() {
+	layDownView = !layDownView;
+	applyLayDownView();
+	renderSidePanel();
+	renderDomEnv();
+	const inXr = !!(renderer && renderer.xr && renderer.xr.isPresenting) || !!mobileXRMode;
+	if (layDownView) {
+		updateStatus(inXr
+			? 'Lay-down view on — look toward the ceiling to face the scene'
+			: 'Lay-down view armed — takes effect in AR/VR', 'connected');
+	} else {
+		updateStatus('Sit-up view restored', 'connected');
+	}
 }
 
 // ============================================================================
@@ -491,6 +525,8 @@ let uiToggleCanvas = null;
 let uiToggleContext = null;
 let uiToggleTexture = null;
 let player = null;            // rig holding the camera + controllers (locomotion)
+let viewOffset = null;        // child of player: pitch remapping for lay-down AR/VR view
+let layDownView = false;      // when true (in XR), pitch viewOffset -90° for supine viewing
 let locomotionMode = 'free';  // 'off' (thumbsticks scroll) | 'planar' (First Person) | 'free' (WASD) - see dchat-nav-type
 let _locoPrevTime = 0;        // previous frame timestamp for dt
 
@@ -579,9 +615,14 @@ camera.add(hud);
 // Moving/rotating this group is the WebXR-correct way to move the user — three.js
 // composes the rig's transform with the live headset pose. The camera must be in
 // the scene graph for the HUD's children to render, which it now is via `player`.
+// viewOffset sits between player and camera/controllers so lay-down pitch remaps
+// the view without rotating the locomotion yaw rig (player.rotateY stays world-up).
 player = new THREE.Group();
 player.name = 'player';
-player.add(camera);
+viewOffset = new THREE.Group();
+viewOffset.name = 'viewOffset';
+viewOffset.add(camera);
+player.add(viewOffset);
 scene.add(player);
 
 window.hud = hud;
@@ -951,6 +992,7 @@ async function enterMobileXRMode(mode) {
 		updateStatus('Cardboard VR active', 'connected');
 	}
 	applyEnvironmentMode();
+	applyLayDownView();
 	renderDomEnv();
 }
 
@@ -981,6 +1023,7 @@ function exitMobileXRMode() {
 	mobileXRWalkBtn.hidden = true;
 	isVRMode = false;
 	applyEnvironmentMode();
+	applyLayDownView(); // clear pitch for desktop
 	renderDomEnv();
 	updateStatus('Ready', '');
 	refreshMobileXRButtons();
@@ -1976,11 +2019,14 @@ function hslToHex(h, s, l) {
 // exists (e.g. not yet — guarded by null checks below).
 function renderDomEnv() {
 	if (!dchatEnvModeMount) return;
-	const buttons = ENV_MODE_BUTTONS.map(b => ({
-		...b,
-		variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
-	}));
-	mountButtonsToDOM(dchatEnvModeMount, buttons, { width: 256, height: 40, gap: 6, fontSize: 13 }, handleMenuAction);
+	const buttons = [
+		...ENV_MODE_BUTTONS.map(b => ({
+			...b,
+			variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
+		})),
+		getLayDownButton()
+	];
+	mountButtonsToDOM(dchatEnvModeMount, buttons, { width: 256, height: 40, gap: 6, fontSize: 13, perRow: 2 }, handleMenuAction);
 	const colorEnabled = envColorControlsEnabled();
 	if (dchatEnvControls) dchatEnvControls.classList.toggle('disabled', !colorEnabled);
 	const note = dchatEnvControls && dchatEnvControls.querySelector('.dchat-disabled-note');
@@ -2027,9 +2073,10 @@ function renderSidePanel() {
 	sidePanelEnvButtonBoxes = envLayout.boxes;
 	drawButtonsToCanvas(ctx, sidePanelEnvButtonBoxes, { fontSize: 16 });
 
-	// Exit AR/VR — ends the WebXR session and returns to the desktop page
+	// Exit AR/VR + Lay down / Sit up (same row; lay-down remaps view for supine use)
 	const exitY = 16 + envLayout.totalHeight + 8;
-	const exitLayout = buildButtonLayout(EXIT_XR_BUTTON, { width: w - 32, x: 16, y: exitY, height: 40, perRow: 1, gap: 4 });
+	const exitLayButtons = [...EXIT_XR_BUTTON, getLayDownButton()];
+	const exitLayout = buildButtonLayout(exitLayButtons, { width: w - 32, x: 16, y: exitY, height: 40, perRow: 2, gap: 4 });
 	sidePanelExitButtonBoxes = exitLayout.boxes;
 	drawButtonsToCanvas(ctx, sidePanelExitButtonBoxes, { fontSize: 15 });
 
@@ -3992,9 +4039,9 @@ function setupXRControllers() {
 		// Create a reticle for hit feedback
 		reticles.push(createReticle());
 
-		// Controllers ride in the player rig so their rays stay correct as the
-		// user moves/turns via locomotion.
-		player.add(controller);
+		// Controllers ride under viewOffset (with the camera) so lay-down pitch
+		// remaps hands with the headset; player still owns locomotion yaw/move.
+		viewOffset.add(controller);
 	}
 }
 
@@ -5129,11 +5176,10 @@ function updateLocomotion(dt, session) {
 		const ax = axes.length >= 4 ? axes[2] : (axes[0] || 0);
 		const ay = axes.length >= 4 ? axes[3] : (axes[1] || 0);
 		if (source.handedness === 'left') {
-			// This controller reports the left thumbstick's horizontal and vertical
-			// axes transposed, so swap them: strafe reads the vertical axis and
-			// forward/back reads the horizontal axis.
-			if (Math.abs(ay) > THUMBSTICK_DEADZONE) mx = ay;
-			if (Math.abs(ax) > THUMBSTICK_DEADZONE) my = ax;
+			// Direct mapping: previous transpose was wrong for Quest / current
+			// OpenXR gamepads (strafe = horizontal, forward/back = vertical).
+			if (Math.abs(ax) > THUMBSTICK_DEADZONE) mx = ax;
+			if (Math.abs(ay) > THUMBSTICK_DEADZONE) my = ay;
 		} else if (source.handedness === 'right') {
 			if (Math.abs(ax) > THUMBSTICK_DEADZONE) rx = ax;
 			// Right thumbstick vertical: push up to ascend (Q), pull down to
@@ -5725,6 +5771,7 @@ renderer.xr.addEventListener('sessionstart', () => {
 	// is around y=1.6, so anchor panels just below eye level for comfort.
 	positionAllPanels(1.4);
 	setImmersiveUiMode(true);
+	applyLayDownView();
 
 	// PCVR headsets (Quest via Link/Air Link, Index, Vive, WMR, ...) report
 	// an 'opaque' blend mode — there's no camera passthrough to show, so
@@ -5745,6 +5792,7 @@ renderer.xr.addEventListener('sessionend', () => {
 	// Reset to AR mode when leaving XR
 	isVRMode = false;
 	applyEnvironmentMode();
+	applyLayDownView(); // clear pitch so desktop orbit stays upright
 	renderSidePanel();
 	renderDomEnv();
 	setImmersiveUiMode(false);
