@@ -169,6 +169,9 @@ const ENV_MODE_BUTTONS = [
 	{ id: 'ar', label: 'AR (passthrough)', action: 'env:ar' },
 	{ id: 'vr', label: 'VR (color)', action: 'env:vr' }
 ];
+const EXIT_XR_BUTTON = [
+	{ id: 'exitXr', label: 'Exit AR/VR', action: 'env:exit', variant: 'warning' }
+];
 const SCENES_BUTTONS = [
 	{ id: 'export', label: 'Export', action: 'scenes:export', variant: 'accent' },
 	{ id: 'importFile', label: 'Import File', action: 'scenes:importFile' },
@@ -177,6 +180,15 @@ const SCENES_BUTTONS = [
 ];
 const EXPORT_COMBINED_BUTTON = [
 	{ id: 'exportCombined', label: 'Export Combined', action: 'scenes:exportCombined', variant: 'warning' }
+];
+const FILES_BUTTONS = [
+	{ id: 'uploadFiles', label: 'Upload files', action: 'files:upload', variant: 'accent' },
+	{ id: 'clearFiles', label: 'Clear all', action: 'files:clear', variant: 'secondary' }
+];
+const CODE_BUTTONS = [
+	{ id: 'codeLive', label: 'Live updates', action: 'code:toggleLive' },
+	{ id: 'codeApply', label: 'Apply', action: 'code:apply', variant: 'accent' },
+	{ id: 'codeRevert', label: 'Revert', action: 'code:revert', variant: 'secondary' }
 ];
 const COMMUNITY_BUTTONS = [
 	{ id: 'upload', label: 'Upload Current Scene', action: 'community:upload', variant: 'accent' },
@@ -187,14 +199,21 @@ const THEME_BUTTONS = [
 	{ id: 'refreshThemes', label: 'Refresh', action: 'themes:refresh' },
 	{ id: 'resetTheme', label: 'Reset Default', action: 'themes:reset' }
 ];
-// Mini in-panel tabs drawn at the top of the XR scene panel, since it has
-// no separate mesh for Community (unlike desktop's tab bar) - see
-// SCENE_PANEL_SUB_TABS usage in renderScenePanel()/handleScenePanelHit().
-// Themes list/apply is available in XR; theme restyle chat lives under desktop Chat → Theme.
+// XR left panel top-level sections (desktop tabs minus Chat/Environment, which
+// have their own XR meshes). Community nests Scenes|Themes like desktop.
 const SCENE_PANEL_SUB_TABS = [
 	{ id: 'scenes', label: 'Scenes', action: 'panel:scenes' },
-	{ id: 'community', label: 'Community', action: 'panel:community' },
-	{ id: 'themes', label: 'Themes', action: 'panel:themes' }
+	{ id: 'files', label: 'Files', action: 'panel:files' },
+	{ id: 'code', label: 'Code', action: 'panel:code' },
+	{ id: 'community', label: 'Community', action: 'panel:community' }
+];
+const COMMUNITY_NESTED_TABS = [
+	{ id: 'scenes', label: 'Scenes', action: 'communitySection:scenes' },
+	{ id: 'themes', label: 'Themes', action: 'communitySection:themes' }
+];
+const CHAT_SUB_TABS = [
+	{ id: 'scene', label: 'Scene', action: 'chatSection:scene' },
+	{ id: 'theme', label: 'Theme', action: 'chatSection:theme' }
 ];
 
 // Routes both a desktop SVG click and an XR controller-ray/touch hit to the
@@ -213,6 +232,9 @@ function handleMenuAction(action) {
 			renderSidePanel();
 			renderDomEnv();
 			break;
+		case 'env:exit':
+			exitXrToDesktop();
+			break;
 		case 'scenes:export':
 			showExportModal(false);
 			break;
@@ -229,6 +251,26 @@ function handleMenuAction(action) {
 			if ((loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0) && loadedScenes.length > 0) {
 				showExportModal(true);
 			}
+			break;
+		case 'files:upload':
+			dchatFilesInput?.click();
+			break;
+		case 'files:clear':
+			clearContextLibrary();
+			break;
+		case 'code:toggleLive':
+			if (dchatCodeLive) {
+				dchatCodeLive.checked = !dchatCodeLive.checked;
+				if (dchatCodeLive.checked && codeEditorDirty) scheduleLiveCodeApply();
+			}
+			renderScenePanel();
+			break;
+		case 'code:apply':
+			applyCodeFromEditor({ fromLive: false });
+			break;
+		case 'code:revert':
+			revertCodeEditor();
+			renderScenePanel();
 			break;
 		case 'community:upload':
 			uploadCurrentSceneToCommunity();
@@ -248,16 +290,60 @@ function handleMenuAction(action) {
 		case 'panel:scenes':
 			scenePanelSubTab = 'scenes';
 			renderScenePanel();
+			renderInputToCanvas();
+			break;
+		case 'panel:files':
+			scenePanelSubTab = 'files';
+			renderScenePanel();
+			renderInputToCanvas();
+			break;
+		case 'panel:code':
+			scenePanelSubTab = 'code';
+			syncCodeEditorFromState({ force: false });
+			codeScrollOffset = 0;
+			renderScenePanel();
+			renderInputToCanvas();
 			break;
 		case 'panel:community':
 			scenePanelSubTab = 'community';
-			refreshCommunityScenes();
+			renderScenePanel();
+			renderInputToCanvas();
+			if (communitySection === 'themes') refreshCommunityThemes();
+			else refreshCommunityScenes();
 			break;
-		case 'panel:themes':
-			scenePanelSubTab = 'themes';
-			refreshCommunityThemes();
+		case 'communitySection:scenes':
+			setCommunitySection('scenes');
+			renderScenePanel();
+			break;
+		case 'communitySection:themes':
+			setCommunitySection('themes');
+			renderScenePanel();
+			break;
+		case 'chatSection:scene':
+			setChatSection('scene');
+			break;
+		case 'chatSection:theme':
+			setChatSection('theme');
 			break;
 	}
+}
+
+/** End the active WebXR session (or mobile pseudo-XR) and return to the desktop DOM UI. */
+function exitXrToDesktop() {
+	if (mobileXRMode) {
+		exitMobileXRMode();
+		updateStatus('Exited to desktop', 'connected');
+		return;
+	}
+	const session = renderer?.xr?.getSession?.();
+	if (session) {
+		session.end().catch((err) => {
+			console.warn('XR session end failed:', err);
+			updateStatus(`Could not exit XR: ${err?.message || err}`, 'error');
+		});
+		return;
+	}
+	updateStatus('Not in an XR session', '');
 }
 
 // ============================================================================
@@ -442,11 +528,11 @@ let executedCodeBlocks = [];  // vr-exec code blocks from current chat session
 let loadedScenes = [];        // imported scene files: { id, name, thumbnail, codeBlocks, active, createdAt, _thumbImage }
 let sceneScrollOffset = 0;
 let sceneFileExtension = 'vrscene';
-let scenePanelSubTab = 'scenes'; // 'scenes' | 'community' | 'themes' - see SCENE_PANEL_SUB_TABS
+let scenePanelSubTab = 'scenes'; // 'scenes' | 'files' | 'code' | 'community' - see SCENE_PANEL_SUB_TABS
 let communityScenesCache = []; // last-fetched list, so the XR panel has something to draw without re-fetching every frame
 let communityThemesCache = [];
 let communitySection = 'scenes'; // Community tab: 'scenes' | 'themes'
-let chatSection = 'scene'; // Chat tab: 'scene' | 'theme' // desktop Community tab: 'scenes' | 'themes'
+let chatSection = 'scene'; // Chat tab: 'scene' | 'theme'
 let displayOnlyMode = false; // share URL opened with editor chrome stripped
 let pendingShare = null; // share modal payload { id, name, editorUrl, viewUrl }
 let codeEditorDirty = false; // user has unsaved edits in Code tab
@@ -463,9 +549,14 @@ let themeChatLoading = false;
 // Button hitboxes from the most recent draw of each canvas panel, reused
 // by handleSidePanelHit/handleScenePanelHit (see menuSystem.js hitTestButtons).
 let sidePanelEnvButtonBoxes = [];
+let sidePanelExitButtonBoxes = [];
 let scenePanelButtonBoxes = [];
 let scenePanelSubTabBoxes = [];
+let scenePanelNestedTabBoxes = []; // Community Scenes|Themes nested tabs
 let scenePanelListTop = 0; // set by renderScenePanel, reused by handleScenePanelHit
+let chatPanelSubTabBoxes = []; // Chat Scene|Theme subtabs on center panel
+let codeScrollOffset = 0; // line scroll for XR Code panel
+let filesScrollOffset = 0; // row scroll for XR Files panel
 let systemObjectIds = new Set();
 let systemOverlayIds = new Set();
 
@@ -977,43 +1068,86 @@ function renderChatToCanvas() {
 	const padding = 30;
 	const maxWidth = width - padding * 2;
 	const headerHeight = 60;
-	const contentTop = headerHeight + 40; // first line Y
+	const subTabY = headerHeight + 8;
+	const subTabH = 36;
+	const contentTop = subTabY + subTabH + 28; // first line Y (below Scene|Theme tabs)
 	const contentBottom = height - 20;
 	const visibleLineCount = Math.floor((contentBottom - contentTop) / lineHeight);
 
-	// Build all lines from all messages (no limit)
+	const isTheme = chatSection === 'theme';
+
+	// Build all lines for the active chat section
 	ctx.font = `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`;
-	const allLines = []; // { text, color, font }
-	for (const msg of displayMessages) {
-		const isUser = msg.role === 'user';
-		// Role header line
+	const allLines = []; // { text, color, font, heightScale }
+	if (isTheme) {
 		allLines.push({
-			text: isUser ? 'You' : 'Claude',
-			color: isUser ? '#6366f1' : '#10b981',
-			font: `bold ${MESSAGE_FONT_SIZE - 4}px -apple-system, BlinkMacSystemFont, sans-serif`,
+			text: 'Theme restyle chat',
+			color: 'rgba(255,255,255,0.45)',
+			font: `bold ${MESSAGE_FONT_SIZE - 6}px -apple-system, BlinkMacSystemFont, sans-serif`,
+			heightScale: 0.8
+		});
+		allLines.push({
+			text: 'Ask for editor chrome restyles. Upload from Community → Themes.',
+			color: 'rgba(255,255,255,0.35)',
+			font: `${MESSAGE_FONT_SIZE - 8}px -apple-system, BlinkMacSystemFont, sans-serif`,
 			heightScale: 0.7
 		});
-		// Wrapped message lines
-		const wrapped = wrapText(ctx, msg.content, maxWidth);
-		for (const line of wrapped) {
+		allLines.push({ text: '', color: '', font: '', heightScale: 0.4 });
+		for (const msg of themeChatMessages) {
+			const isUser = msg.role === 'user';
 			allLines.push({
-				text: line,
-				color: '#e0e0e0',
-				font: `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
+				text: isUser ? 'You' : 'Theme AI',
+				color: isUser ? '#6366f1' : '#f59e0b',
+				font: `bold ${MESSAGE_FONT_SIZE - 4}px -apple-system, BlinkMacSystemFont, sans-serif`,
+				heightScale: 0.7
+			});
+			const wrapped = wrapText(ctx, String(msg.content || ''), maxWidth);
+			for (const line of wrapped) {
+				allLines.push({
+					text: line,
+					color: '#e0e0e0',
+					font: `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
+					heightScale: 1.0
+				});
+			}
+			allLines.push({ text: '', color: '', font: '', heightScale: 0.5 });
+		}
+		if (themeChatLoading) {
+			allLines.push({
+				text: thinkingStatusText(),
+				color: '#8b5cf6',
+				font: `italic ${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
 				heightScale: 1.0
 			});
 		}
-		// Spacing after message
-		allLines.push({ text: '', color: '', font: '', heightScale: 0.5 });
-	}
-
-	if (isLoading) {
-		allLines.push({
-			text: thinkingStatusText(),
-			color: '#8b5cf6',
-			font: `italic ${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
-			heightScale: 1.0
-		});
+	} else {
+		for (const msg of displayMessages) {
+			const isUser = msg.role === 'user';
+			allLines.push({
+				text: isUser ? 'You' : 'Claude',
+				color: isUser ? '#6366f1' : '#10b981',
+				font: `bold ${MESSAGE_FONT_SIZE - 4}px -apple-system, BlinkMacSystemFont, sans-serif`,
+				heightScale: 0.7
+			});
+			const wrapped = wrapText(ctx, msg.content, maxWidth);
+			for (const line of wrapped) {
+				allLines.push({
+					text: line,
+					color: '#e0e0e0',
+					font: `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
+					heightScale: 1.0
+				});
+			}
+			allLines.push({ text: '', color: '', font: '', heightScale: 0.5 });
+		}
+		if (isLoading) {
+			allLines.push({
+				text: thinkingStatusText(),
+				color: '#8b5cf6',
+				font: `italic ${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`,
+				heightScale: 1.0
+			});
+		}
 	}
 
 	// Clamp scroll offset: 0 = bottom (newest visible), max = scrolled to top
@@ -1021,17 +1155,14 @@ function renderChatToCanvas() {
 	const maxScroll = Math.max(0, totalLines - visibleLineCount);
 	chatScrollOffset = Math.max(0, Math.min(chatScrollOffset, maxScroll));
 
-	// Determine which lines to show: start from bottom by default
 	const bottomIndex = totalLines - chatScrollOffset;
 	const topIndex = Math.max(0, bottomIndex - visibleLineCount);
 
-	// Clear and draw background
 	ctx.clearRect(0, 0, width, height);
 	ctx.fillStyle = 'rgba(20, 20, 30, 0.92)';
 	roundRect(ctx, 0, 0, width, height, 24);
 	ctx.fill();
 
-	// Draw header
 	ctx.fillStyle = 'rgba(99, 102, 241, 0.3)';
 	roundRect(ctx, 0, 0, width, headerHeight, 24, true);
 	ctx.fill();
@@ -1039,16 +1170,26 @@ function renderChatToCanvas() {
 	ctx.font = 'bold 28px -apple-system, BlinkMacSystemFont, sans-serif';
 	ctx.fillStyle = '#ffffff';
 	ctx.textAlign = 'center';
-	ctx.fillText('Claude Chat', width / 2, 40);
+	ctx.fillText(isTheme ? 'Theme Chat' : 'Claude Chat', width / 2, 40);
 
-	// Draw scroll indicator if there's content above
+	// Scene | Theme subtabs (match desktop Chat sections)
+	const chatSubButtons = CHAT_SUB_TABS.map(t => ({
+		...t,
+		variant: chatSection === t.id ? 'active' : 'inactiveToggle'
+	}));
+	const chatSubLayout = buildButtonLayout(chatSubButtons, {
+		width: width - 48, x: 24, y: subTabY, height: subTabH, perRow: 2, gap: 8
+	});
+	chatPanelSubTabBoxes = chatSubLayout.boxes;
+	drawButtonsToCanvas(ctx, chatPanelSubTabBoxes, { fontSize: 16 });
+
 	if (chatScrollOffset < maxScroll) {
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
 		ctx.font = '18px sans-serif';
-		ctx.fillText('\u25B2 scroll up', width / 2, headerHeight + 20);
+		ctx.textAlign = 'center';
+		ctx.fillText('\u25B2 scroll up', width / 2, contentTop - 10);
 	}
 
-	// Draw visible lines
 	ctx.textAlign = 'left';
 	let y = contentTop;
 	for (let i = topIndex; i < bottomIndex && i < totalLines; i++) {
@@ -1064,7 +1205,6 @@ function renderChatToCanvas() {
 		y += lineHeight * line.heightScale;
 	}
 
-	// Draw scroll indicator if there's content below
 	if (chatScrollOffset > 0) {
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
 		ctx.font = '18px sans-serif';
@@ -1073,17 +1213,14 @@ function renderChatToCanvas() {
 		ctx.textAlign = 'left';
 	}
 
-	// Scrollbar track
 	if (maxScroll > 0) {
 		const trackX = width - 14;
-		const trackTop = headerHeight + 4;
-		const trackHeight = height - headerHeight - 8;
+		const trackTop = contentTop - 8;
+		const trackHeight = height - trackTop - 8;
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
 		roundRect(ctx, trackX, trackTop, 8, trackHeight, 4);
 		ctx.fill();
-
-		// Scrollbar thumb
-		const thumbRatio = visibleLineCount / totalLines;
+		const thumbRatio = visibleLineCount / Math.max(1, totalLines);
 		const thumbHeight = Math.max(20, trackHeight * thumbRatio);
 		const scrollRatio = maxScroll > 0 ? (maxScroll - chatScrollOffset) / maxScroll : 0;
 		const thumbY = trackTop + scrollRatio * (trackHeight - thumbHeight);
@@ -1240,7 +1377,10 @@ function renderInputToCanvas() {
 		ctx.fillText(displayText + '|', L.inputAreaX + 12, height / 2 + 8);
 	} else {
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-		ctx.fillText('Ask Claude something...', L.inputAreaX + 12, height / 2 + 8);
+		let placeholder = 'Ask Claude something...';
+		if (scenePanelSubTab === 'code') placeholder = 'KEYS edits Code — use Apply on left panel';
+		else if (chatSection === 'theme') placeholder = 'Ask for a theme restyle...';
+		ctx.fillText(placeholder, L.inputAreaX + 12, height / 2 + 8);
 	}
 
 	ctx.textAlign = 'center';
@@ -1440,12 +1580,25 @@ function handleKeyboardHit(uv) {
 	if (idx >= 0) dispatchKey(keyboardKeyRects[idx]);
 }
 
+function xrCodeEditingActive() {
+	return scenePanelSubTab === 'code' && !!dchatCodeEditor;
+}
+
+function setCodeEditorText(text) {
+	if (!dchatCodeEditor) return;
+	dchatCodeEditor.value = text;
+	markCodeEditorDirty();
+	renderScenePanel();
+}
+
 function dispatchKey(key) {
+	const editCode = xrCodeEditingActive();
 	switch (key.action) {
 		case 'char': {
 			let c = key.value;
 			if (keyboardShift && /^[a-z]$/.test(c)) c = c.toUpperCase();
-			setInputText(inputText + c);
+			if (editCode) setCodeEditorText(dchatCodeEditor.value + c);
+			else setInputText(inputText + c);
 			// Shift auto-resets after one character, like a phone keyboard.
 			if (keyboardShift) {
 				keyboardShift = false;
@@ -1454,10 +1607,12 @@ function dispatchKey(key) {
 			break;
 		}
 		case 'space':
-			setInputText(inputText + ' ');
+			if (editCode) setCodeEditorText(dchatCodeEditor.value + ' ');
+			else setInputText(inputText + ' ');
 			break;
 		case 'backspace':
-			setInputText(inputText.slice(0, -1));
+			if (editCode) setCodeEditorText(dchatCodeEditor.value.slice(0, -1));
+			else setInputText(inputText.slice(0, -1));
 			break;
 		case 'shift':
 			keyboardShift = !keyboardShift;
@@ -1469,7 +1624,8 @@ function dispatchKey(key) {
 			renderKeyboardToCanvas();
 			break;
 		case 'enter':
-			handleXRSend();
+			if (editCode) setCodeEditorText(dchatCodeEditor.value + '\n');
+			else handleXRSend();
 			break;
 	}
 }
@@ -1867,15 +2023,21 @@ function renderSidePanel() {
 		...b,
 		variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
 	}));
-	const envLayout = buildButtonLayout(envButtons, { width: w - 32, x: 16, y: 16, height: 80, perRow: 2, gap: 4 });
+	const envLayout = buildButtonLayout(envButtons, { width: w - 32, x: 16, y: 16, height: 56, perRow: 2, gap: 4 });
 	sidePanelEnvButtonBoxes = envLayout.boxes;
-	drawButtonsToCanvas(ctx, sidePanelEnvButtonBoxes, { fontSize: 24 });
+	drawButtonsToCanvas(ctx, sidePanelEnvButtonBoxes, { fontSize: 16 });
+
+	// Exit AR/VR — ends the WebXR session and returns to the desktop page
+	const exitY = 16 + envLayout.totalHeight + 8;
+	const exitLayout = buildButtonLayout(EXIT_XR_BUTTON, { width: w - 32, x: 16, y: exitY, height: 40, perRow: 1, gap: 4 });
+	sidePanelExitButtonBoxes = exitLayout.boxes;
+	drawButtonsToCanvas(ctx, sidePanelExitButtonBoxes, { fontSize: 15 });
 
 	// --- Section label ---
 	ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
 	ctx.fillStyle = 'rgba(255,255,255,0.4)';
 	ctx.textAlign = 'center';
-	ctx.fillText('BG Color', w / 2, 130);
+	ctx.fillText('BG Color', w / 2, exitY + exitLayout.totalHeight + 28);
 
 	// --- Color Wheel (center area) ---
 	const wheelCX = w / 2;
@@ -1971,7 +2133,8 @@ function renderSidePanel() {
 	// Dim overlay if in AR mode (color wheel inactive)
 	if (!isVRMode) {
 		ctx.fillStyle = 'rgba(20, 20, 30, 0.6)';
-		roundRect(ctx, 0, 115, w, h - 115 - 8, 0);
+		const dimTop = 130; // below AR/VR + Exit buttons
+		roundRect(ctx, 0, dimTop, w, h - dimTop - 8, 0);
 		ctx.fill();
 		ctx.font = '18px -apple-system, BlinkMacSystemFont, sans-serif';
 		ctx.fillStyle = 'rgba(255,255,255,0.5)';
@@ -2025,6 +2188,12 @@ function handleSidePanelHit(uv) {
 	const envHit = hitTestButtons(sidePanelEnvButtonBoxes, canvasX, canvasY);
 	if (envHit) {
 		handleMenuAction(envHit.action);
+		return;
+	}
+
+	const exitHit = hitTestButtons(sidePanelExitButtonBoxes, canvasX, canvasY);
+	if (exitHit) {
+		handleMenuAction(exitHit.action);
 		return;
 	}
 
@@ -2923,6 +3092,9 @@ function setChatSection(section) {
 	const themeSec = document.getElementById('dchat-chat-section-theme');
 	if (sceneSec) sceneSec.classList.toggle('active', chatSection === 'scene');
 	if (themeSec) themeSec.classList.toggle('active', chatSection === 'theme');
+	chatScrollOffset = 0;
+	renderChatToCanvas();
+	renderInputToCanvas();
 }
 
 function uploadCurrentThemeToCommunity() {
@@ -2947,10 +3119,8 @@ function uploadCurrentThemeToCommunity() {
 }
 
 function refreshCommunityThemes() {
-	if (scenePanelSubTab === 'themes') {
-		// XR will redraw from cache after fetch
-	}
-	if (!dchatThemesList && scenePanelSubTab !== 'themes') return;
+	const xrThemes = scenePanelSubTab === 'community' && communitySection === 'themes';
+	if (!dchatThemesList && !xrThemes) return;
 	if (dchatThemesList) dchatThemesList.innerHTML = '<div class="dchat-scene-empty">Loading...</div>';
 	fetch('/api/community-themes')
 		.then(res => res.json().then(data => ({ ok: res.ok, data })))
@@ -2960,7 +3130,7 @@ function refreshCommunityThemes() {
 		})
 		.catch(err => {
 			communityThemesCache = [];
-			if (scenePanelSubTab === 'themes') renderScenePanel();
+			if (xrThemes) renderScenePanel();
 			if (!dchatThemesList) return;
 			dchatThemesList.innerHTML = '';
 			const empty = document.createElement('div');
@@ -2972,7 +3142,7 @@ function refreshCommunityThemes() {
 
 function renderCommunityThemeList(themes) {
 	communityThemesCache = themes;
-	if (scenePanelSubTab === 'themes') renderScenePanel();
+	if (scenePanelSubTab === 'community' && communitySection === 'themes') renderScenePanel();
 	if (!dchatThemesList) return;
 	dchatThemesList.innerHTML = '';
 	if (themes.length === 0) {
@@ -3053,6 +3223,7 @@ async function sendThemeChat() {
 	themeChatLoading = true;
 	if (dchatThemeChatSend) dchatThemeChatSend.disabled = true;
 	appendThemeChatBubble('system', thinkingStatusText());
+	renderChatToCanvas();
 	try {
 		let data;
 		if (selectedBackend === 'ollama') {
@@ -3097,6 +3268,7 @@ async function sendThemeChat() {
 	} finally {
 		themeChatLoading = false;
 		if (dchatThemeChatSend) dchatThemeChatSend.disabled = false;
+		renderChatToCanvas();
 	}
 }
 
@@ -3263,39 +3435,47 @@ function renderScenePanel() {
 	roundRect(ctx, 0, 0, w, h, 16);
 	ctx.fill();
 
-	// Header
+	// Header — title follows active section (Scenes / Files / Code / Community)
+	const headerTitles = {
+		scenes: 'Scenes',
+		files: 'Files',
+		code: 'Code',
+		community: 'Community'
+	};
 	ctx.fillStyle = 'rgba(139, 92, 246, 0.3)';
 	roundRect(ctx, 0, 0, w, 50, 16, true);
 	ctx.fill();
 	ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, sans-serif';
 	ctx.fillStyle = '#ffffff';
 	ctx.textAlign = 'center';
-	ctx.fillText('Scenes', w / 2, 35);
+	ctx.fillText(headerTitles[scenePanelSubTab] || 'Scenes', w / 2, 35);
 
-	// Sub-tabs (Scenes / Community / Themes) - desktop has Community with
-	// Scenes|Themes sections; XR uses a third mini-tab for theme Apply.
+	// Top-level sub-tabs (Scenes | Files | Code | Community)
 	const subTabButtons = SCENE_PANEL_SUB_TABS.map(t => ({
 		...t,
 		variant: scenePanelSubTab === t.id ? 'active' : 'inactiveToggle'
 	}));
-	const subTabLayout = buildButtonLayout(subTabButtons, { width: w - 24, x: 12, y: 58, height: 36, perRow: 3, gap: 6 });
+	const subTabLayout = buildButtonLayout(subTabButtons, {
+		width: w - 24, x: 12, y: 58, height: 32, perRow: 4, gap: 4
+	});
 	scenePanelSubTabBoxes = subTabLayout.boxes;
-	drawButtonsToCanvas(ctx, scenePanelSubTabBoxes, { fontSize: 13 });
+	scenePanelNestedTabBoxes = [];
+	drawButtonsToCanvas(ctx, scenePanelSubTabBoxes, { fontSize: 11 });
 
-	const contentTop = 58 + subTabLayout.totalHeight + 10;
+	let contentTop = 58 + subTabLayout.totalHeight + 10;
+	scenePanelButtonBoxes = [];
 
 	if (scenePanelSubTab === 'scenes') {
-		// Button row (shared spec - see SCENES_BUTTONS/handleMenuAction)
-		const btnLayout = buildButtonLayout(SCENES_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 44, minWidth: 100, gap: 8 });
+		const btnLayout = buildButtonLayout(SCENES_BUTTONS, {
+			width: w - 24, x: 12, y: contentTop, height: 44, minWidth: 100, gap: 8
+		});
 		scenePanelButtonBoxes = btnLayout.boxes;
 		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 15 });
 
-		// Separator
 		const sepY = contentTop + btnLayout.totalHeight + 8;
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
 		ctx.fillRect(12, sepY, w - 24, 1);
 
-		// Scene list
 		const listTop = sepY + 8;
 		scenePanelListTop = listTop;
 		const itemH = 72;
@@ -3316,12 +3496,10 @@ function renderScenePanel() {
 				const sc = loadedScenes[i + sceneScrollOffset];
 				const itemY = listTop + i * itemH;
 
-				// Item background
 				ctx.fillStyle = sc.active ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255, 255, 255, 0.03)';
 				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
 				ctx.fill();
 
-				// Checkbox
 				const chkX = 16, chkY = itemY + (itemH - 4) / 2 - 12;
 				ctx.strokeStyle = sc.active ? '#6366f1' : 'rgba(255,255,255,0.3)';
 				ctx.lineWidth = 2;
@@ -3340,7 +3518,6 @@ function renderScenePanel() {
 					ctx.stroke();
 				}
 
-				// Thumbnail
 				const thumbX = 48, thumbY2 = itemY + 8, thumbSize = itemH - 20;
 				if (sc._thumbImage) {
 					ctx.drawImage(sc._thumbImage, thumbX, thumbY2, thumbSize, thumbSize);
@@ -3354,7 +3531,6 @@ function renderScenePanel() {
 					ctx.fillText('No img', thumbX + thumbSize / 2, thumbY2 + thumbSize / 2 + 4);
 				}
 
-				// Scene name
 				ctx.textAlign = 'left';
 				ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
 				ctx.fillStyle = '#ffffff';
@@ -3365,7 +3541,6 @@ function renderScenePanel() {
 				if (dName !== sc.name) dName += '\u2026';
 				ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
 
-				// Remove button (X)
 				const xX = w - 36, xY = itemY + (itemH - 4) / 2 - 10;
 				ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
 				roundRect(ctx, xX, xY, 24, 24, 4);
@@ -3376,7 +3551,6 @@ function renderScenePanel() {
 				ctx.fillText('\u00d7', xX + 12, xY + 18);
 			}
 
-			// Scroll indicators
 			if (sceneScrollOffset > 0) {
 				ctx.fillStyle = 'rgba(255,255,255,0.3)';
 				ctx.font = '14px sans-serif';
@@ -3391,14 +3565,107 @@ function renderScenePanel() {
 			}
 		}
 
-		// Export Combined button (shared spec - see EXPORT_COMBINED_BUTTON)
 		const hasContent = loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0;
 		if (hasContent && loadedScenes.length > 0) {
-			drawButtonsToCanvas(ctx, buildButtonLayout(EXPORT_COMBINED_BUTTON, { width: w - 24, x: 12, y: 700, height: 48, perRow: 1 }).boxes, { fontSize: 18 });
+			drawButtonsToCanvas(ctx, buildButtonLayout(EXPORT_COMBINED_BUTTON, {
+				width: w - 24, x: 12, y: 700, height: 48, perRow: 1
+			}).boxes, { fontSize: 18 });
 		}
-	} else if (scenePanelSubTab === 'themes') {
-		// Themes sub-tab: upload/refresh/reset + Apply list (theme chat is desktop-only).
-		const btnLayout = buildButtonLayout(THEME_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 40, perRow: 3, gap: 6 });
+	} else if (scenePanelSubTab === 'files') {
+		const btnLayout = buildButtonLayout(FILES_BUTTONS, {
+			width: w - 24, x: 12, y: contentTop, height: 44, perRow: 2, gap: 8
+		});
+		scenePanelButtonBoxes = btnLayout.boxes;
+		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 14 });
+
+		const sepY = contentTop + btnLayout.totalHeight + 8;
+		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+		ctx.fillRect(12, sepY, w - 24, 1);
+
+		ctx.font = '13px -apple-system, BlinkMacSystemFont, sans-serif';
+		ctx.fillStyle = 'rgba(255,255,255,0.4)';
+		ctx.textAlign = 'center';
+		ctx.fillText('Context library for chat prompts', w / 2, sepY + 22);
+
+		const listTop = sepY + 34;
+		scenePanelListTop = listTop;
+		const itemH = 56;
+		const listBottom = h - 16;
+		const maxVisible = Math.floor((listBottom - listTop) / itemH);
+		const maxScroll = Math.max(0, contextLibrary.length - maxVisible);
+		filesScrollOffset = Math.max(0, Math.min(filesScrollOffset, maxScroll));
+
+		if (contextLibrary.length === 0) {
+			ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+			ctx.textAlign = 'center';
+			ctx.fillText('No files yet', w / 2, listTop + 40);
+			ctx.fillText('Upload images or text', w / 2, listTop + 62);
+		} else {
+			for (let i = 0; i < maxVisible && (i + filesScrollOffset) < contextLibrary.length; i++) {
+				const rec = contextLibrary[i + filesScrollOffset];
+				const itemY = listTop + i * itemH;
+
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
+				ctx.fill();
+
+				ctx.textAlign = 'left';
+				ctx.font = '18px sans-serif';
+				ctx.fillStyle = '#ffffff';
+				ctx.fillText(rec.kind === 'image' ? '🖼️' : '📄', 16, itemY + itemH / 2 + 6);
+
+				ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
+				const nameX = 44;
+				const maxNameW = w - nameX - 80;
+				let dName = rec.name || 'file';
+				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
+				if (dName !== rec.name) dName += '\u2026';
+				ctx.fillText(dName, nameX, itemY + itemH / 2 - 4);
+				ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+				ctx.fillStyle = 'rgba(255,255,255,0.4)';
+				ctx.fillText(
+					`${rec.kind === 'image' ? 'Image' : 'Text'} \u00b7 ${formatFileSize(rec.size || 0)}`,
+					nameX, itemY + itemH / 2 + 14
+				);
+
+				const pillW = 64, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
+				ctx.fillStyle = 'rgba(239, 68, 68, 0.35)';
+				roundRect(ctx, pillX, pillY, pillW, pillH, 8);
+				ctx.fill();
+				ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, sans-serif';
+				ctx.fillStyle = '#ffffff';
+				ctx.textAlign = 'center';
+				ctx.fillText('Remove', pillX + pillW / 2, pillY + pillH / 2 + 4);
+			}
+			if (filesScrollOffset > 0) {
+				ctx.fillStyle = 'rgba(255,255,255,0.3)';
+				ctx.font = '14px sans-serif';
+				ctx.textAlign = 'center';
+				ctx.fillText('\u25b2 more', w / 2, listTop - 2);
+			}
+			if (filesScrollOffset < maxScroll) {
+				ctx.fillStyle = 'rgba(255,255,255,0.3)';
+				ctx.font = '14px sans-serif';
+				ctx.textAlign = 'center';
+				ctx.fillText('\u25bc more', w / 2, listBottom - 2);
+			}
+		}
+	} else if (scenePanelSubTab === 'code') {
+		const liveOn = !!(dchatCodeLive && dchatCodeLive.checked);
+		const codeBtns = CODE_BUTTONS.map(b => {
+			if (b.id === 'codeLive') {
+				return {
+					...b,
+					label: liveOn ? 'Live: On' : 'Live: Off',
+					variant: liveOn ? 'active' : 'inactiveToggle'
+				};
+			}
+			return { ...b };
+		});
+		const btnLayout = buildButtonLayout(codeBtns, {
+			width: w - 24, x: 12, y: contentTop, height: 40, perRow: 3, gap: 6
+		});
 		scenePanelButtonBoxes = btnLayout.boxes;
 		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 12 });
 
@@ -3406,100 +3673,170 @@ function renderScenePanel() {
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
 		ctx.fillRect(12, sepY, w - 24, 1);
 
-		const listTop = sepY + 8;
+		ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+		ctx.fillStyle = 'rgba(255,255,255,0.4)';
+		ctx.textAlign = 'center';
+		const statusTxt = (dchatCodeStatus && dchatCodeStatus.textContent) || (codeEditorDirty ? 'Edited' : 'Synced');
+		ctx.fillText(`${statusTxt} \u00b7 KEYS edits code when this tab is open`, w / 2, sepY + 18);
+
+		const listTop = sepY + 28;
 		scenePanelListTop = listTop;
-		const itemH = 56;
+		const codeText = (dchatCodeEditor && dchatCodeEditor.value) || buildCodeEditorSource() || '';
+		const codeLines = codeText.length ? codeText.split('\n') : ['// No vr-exec blocks yet — chat to generate, or type here'];
+		const lineH = 18;
 		const listBottom = h - 16;
-		const maxVisible = Math.floor((listBottom - listTop) / itemH);
+		const maxVisible = Math.floor((listBottom - listTop) / lineH);
+		const maxScroll = Math.max(0, codeLines.length - maxVisible);
+		codeScrollOffset = Math.max(0, Math.min(codeScrollOffset, maxScroll));
 
-		if (communityThemesCache.length === 0) {
-			ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
-			ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-			ctx.textAlign = 'center';
-			ctx.fillText('No community themes yet', w / 2, listTop + 40);
-			ctx.fillText('(restyle chat is on desktop)', w / 2, listTop + 62);
-		} else {
-			for (let i = 0; i < maxVisible && i < communityThemesCache.length; i++) {
-				const th = communityThemesCache[i];
-				const itemY = listTop + i * itemH;
+		ctx.fillStyle = 'rgba(0,0,0,0.25)';
+		roundRect(ctx, 8, listTop - 4, w - 16, listBottom - listTop + 8, 8);
+		ctx.fill();
 
-				ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
-				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
-				ctx.fill();
-
-				ctx.textAlign = 'left';
-				ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = '#ffffff';
-				const nameX = 16;
-				const maxNameW = w - nameX - 80;
-				let dName = th.name;
-				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
-				if (dName !== th.name) dName += '…';
-				ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
-
-				const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
-				ctx.fillStyle = 'rgba(16, 185, 129, 0.45)';
-				roundRect(ctx, pillX, pillY, pillW, pillH, 8);
-				ctx.fill();
-				ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = '#ffffff';
-				ctx.textAlign = 'center';
-				ctx.fillText('Apply', pillX + pillW / 2, pillY + pillH / 2 + 4);
-			}
+		ctx.textAlign = 'left';
+		ctx.font = '13px ui-monospace, SFMono-Regular, Menlo, monospace';
+		for (let i = 0; i < maxVisible && (i + codeScrollOffset) < codeLines.length; i++) {
+			const line = codeLines[i + codeScrollOffset];
+			const y = listTop + i * lineH + 12;
+			ctx.fillStyle = 'rgba(255,255,255,0.25)';
+			ctx.fillText(String(i + codeScrollOffset + 1).padStart(3, ' '), 12, y);
+			ctx.fillStyle = '#e5e7eb';
+			let display = line.replace(/\t/g, '  ');
+			const maxW = w - 52;
+			while (ctx.measureText(display).width > maxW && display.length > 3) display = display.slice(0, -1);
+			if (display !== line.replace(/\t/g, '  ')) display += '\u2026';
+			ctx.fillText(display, 44, y);
 		}
-	} else {
-		// Community sub-tab: shared button spec + a simple name/Load list.
-		const btnLayout = buildButtonLayout(COMMUNITY_BUTTONS, { width: w - 24, x: 12, y: contentTop, height: 44, perRow: 2, gap: 8 });
-		scenePanelButtonBoxes = btnLayout.boxes;
-		drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 15 });
-
-		const sepY = contentTop + btnLayout.totalHeight + 8;
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-		ctx.fillRect(12, sepY, w - 24, 1);
-
-		const listTop = sepY + 8;
-		scenePanelListTop = listTop;
-		const itemH = 56;
-		const listBottom = h - 16;
-		const maxVisible = Math.floor((listBottom - listTop) / itemH);
-
-		if (communityScenesCache.length === 0) {
-			ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
-			ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+		if (codeScrollOffset > 0) {
+			ctx.fillStyle = 'rgba(255,255,255,0.3)';
+			ctx.font = '12px sans-serif';
 			ctx.textAlign = 'center';
-			ctx.fillText('No community scenes yet', w / 2, listTop + 40);
-		} else {
-			for (let i = 0; i < maxVisible && i < communityScenesCache.length; i++) {
-				const cs = communityScenesCache[i];
-				const itemY = listTop + i * itemH;
+			ctx.fillText('\u25b2', w / 2, listTop - 6);
+		}
+		if (codeScrollOffset < maxScroll) {
+			ctx.fillStyle = 'rgba(255,255,255,0.3)';
+			ctx.font = '12px sans-serif';
+			ctx.textAlign = 'center';
+			ctx.fillText('\u25bc', w / 2, listBottom + 2);
+		}
+	} else if (scenePanelSubTab === 'community') {
+		// Nested Scenes | Themes (matches desktop Community tab)
+		const nestedBtns = COMMUNITY_NESTED_TABS.map(t => ({
+			...t,
+			variant: communitySection === t.id ? 'active' : 'inactiveToggle'
+		}));
+		const nestedLayout = buildButtonLayout(nestedBtns, {
+			width: w - 24, x: 12, y: contentTop, height: 32, perRow: 2, gap: 6
+		});
+		scenePanelNestedTabBoxes = nestedLayout.boxes;
+		drawButtonsToCanvas(ctx, scenePanelNestedTabBoxes, { fontSize: 13 });
+		contentTop += nestedLayout.totalHeight + 8;
 
-				ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
-				roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
-				ctx.fill();
+		if (communitySection === 'themes') {
+			const btnLayout = buildButtonLayout(THEME_BUTTONS, {
+				width: w - 24, x: 12, y: contentTop, height: 40, perRow: 3, gap: 6
+			});
+			scenePanelButtonBoxes = btnLayout.boxes;
+			drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 11 });
 
-				ctx.textAlign = 'left';
+			const sepY = contentTop + btnLayout.totalHeight + 8;
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+			ctx.fillRect(12, sepY, w - 24, 1);
+
+			const listTop = sepY + 8;
+			scenePanelListTop = listTop;
+			const itemH = 56;
+			const listBottom = h - 16;
+			const maxVisible = Math.floor((listBottom - listTop) / itemH);
+
+			if (communityThemesCache.length === 0) {
 				ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = '#ffffff';
-				const nameX = 16;
-				const maxNameW = w - nameX - 80;
-				let dName = cs.name;
-				while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
-				if (dName !== cs.name) dName += '…';
-				ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
-
-				// High-contrast Load pill
-				const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
-				ctx.fillStyle = '#f4f4f8';
-				roundRect(ctx, pillX, pillY, pillW, pillH, 8);
-				ctx.fill();
-				ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
-				ctx.fillStyle = '#12121a';
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
 				ctx.textAlign = 'center';
-				ctx.fillText('Load', pillX + pillW / 2, pillY + pillH / 2 + 4);
+				ctx.fillText('No community themes yet', w / 2, listTop + 40);
+				ctx.fillText('Restyle in Chat \u2192 Theme', w / 2, listTop + 62);
+			} else {
+				for (let i = 0; i < maxVisible && i < communityThemesCache.length; i++) {
+					const th = communityThemesCache[i];
+					const itemY = listTop + i * itemH;
+
+					ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+					roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
+					ctx.fill();
+
+					ctx.textAlign = 'left';
+					ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
+					ctx.fillStyle = '#ffffff';
+					const nameX = 16;
+					const maxNameW = w - nameX - 80;
+					let dName = th.name;
+					while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
+					if (dName !== th.name) dName += '\u2026';
+					ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
+
+					const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
+					ctx.fillStyle = 'rgba(16, 185, 129, 0.45)';
+					roundRect(ctx, pillX, pillY, pillW, pillH, 8);
+					ctx.fill();
+					ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
+					ctx.fillStyle = '#ffffff';
+					ctx.textAlign = 'center';
+					ctx.fillText('Apply', pillX + pillW / 2, pillY + pillH / 2 + 4);
+				}
+			}
+		} else {
+			const btnLayout = buildButtonLayout(COMMUNITY_BUTTONS, {
+				width: w - 24, x: 12, y: contentTop, height: 44, perRow: 2, gap: 8
+			});
+			scenePanelButtonBoxes = btnLayout.boxes;
+			drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 14 });
+
+			const sepY = contentTop + btnLayout.totalHeight + 8;
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+			ctx.fillRect(12, sepY, w - 24, 1);
+
+			const listTop = sepY + 8;
+			scenePanelListTop = listTop;
+			const itemH = 56;
+			const listBottom = h - 16;
+			const maxVisible = Math.floor((listBottom - listTop) / itemH);
+
+			if (communityScenesCache.length === 0) {
+				ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+				ctx.textAlign = 'center';
+				ctx.fillText('No community scenes yet', w / 2, listTop + 40);
+			} else {
+				for (let i = 0; i < maxVisible && i < communityScenesCache.length; i++) {
+					const cs = communityScenesCache[i];
+					const itemY = listTop + i * itemH;
+
+					ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+					roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
+					ctx.fill();
+
+					ctx.textAlign = 'left';
+					ctx.font = '15px -apple-system, BlinkMacSystemFont, sans-serif';
+					ctx.fillStyle = '#ffffff';
+					const nameX = 16;
+					const maxNameW = w - nameX - 80;
+					let dName = cs.name;
+					while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
+					if (dName !== cs.name) dName += '\u2026';
+					ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
+
+					const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
+					ctx.fillStyle = '#f4f4f8';
+					roundRect(ctx, pillX, pillY, pillW, pillH, 8);
+					ctx.fill();
+					ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, sans-serif';
+					ctx.fillStyle = '#12121a';
+					ctx.textAlign = 'center';
+					ctx.fillText('Load', pillX + pillW / 2, pillY + pillH / 2 + 4);
+				}
 			}
 		}
 	}
-
 
 	ctx.textAlign = 'left';
 	sceneTexture.needsUpdate = true;
@@ -3519,14 +3856,18 @@ function handleScenePanelHit(uv) {
 	const canvasX = uv.x * 384;
 	const canvasY = (1 - uv.y) * 768;
 
-	// Sub-tabs (Scenes / Community)
 	const subTabHit = hitTestButtons(scenePanelSubTabBoxes, canvasX, canvasY);
 	if (subTabHit) {
 		handleMenuAction(subTabHit.action);
 		return;
 	}
 
-	// Button row (shared spec - see SCENES_BUTTONS/COMMUNITY_BUTTONS/handleMenuAction)
+	const nestedHit = hitTestButtons(scenePanelNestedTabBoxes, canvasX, canvasY);
+	if (nestedHit) {
+		handleMenuAction(nestedHit.action);
+		return;
+	}
+
 	const btnHit = hitTestButtons(scenePanelButtonBoxes, canvasX, canvasY);
 	if (btnHit) {
 		handleMenuAction(btnHit.action);
@@ -3534,20 +3875,17 @@ function handleScenePanelHit(uv) {
 	}
 
 	if (scenePanelSubTab === 'scenes') {
-		// Scene list
 		const listTop = scenePanelListTop, itemH = 72, listBottom = 688;
 		const maxVisible = Math.floor((listBottom - listTop) / itemH);
 		if (canvasY >= listTop && canvasY < listTop + maxVisible * itemH) {
 			const idx = Math.floor((canvasY - listTop) / itemH) + sceneScrollOffset;
 			if (idx >= 0 && idx < loadedScenes.length) {
 				if (canvasX >= 384 - 36) {
-					// Remove
 					loadedScenes.splice(idx, 1);
 					rebuildSceneFromActive();
 					renderScenePanel();
 					notifyCodeEditorExternalChange();
 				} else if (canvasX < 48) {
-					// Toggle active
 					loadedScenes[idx].active = !loadedScenes[idx].active;
 					rebuildSceneFromActive();
 					renderScenePanel();
@@ -3556,24 +3894,38 @@ function handleScenePanelHit(uv) {
 			}
 			return;
 		}
-
-		// Export Combined button
-		const combHit = hitTestButtons(buildButtonLayout(EXPORT_COMBINED_BUTTON, { width: 384 - 24, x: 12, y: 700, height: 48, perRow: 1 }).boxes, canvasX, canvasY);
+		const combHit = hitTestButtons(buildButtonLayout(EXPORT_COMBINED_BUTTON, {
+			width: 384 - 24, x: 12, y: 700, height: 48, perRow: 1
+		}).boxes, canvasX, canvasY);
 		if (combHit) handleMenuAction(combHit.action);
-	} else if (scenePanelSubTab === 'themes') {
+	} else if (scenePanelSubTab === 'files') {
 		const listTop = scenePanelListTop, itemH = 56;
-		const idx = Math.floor((canvasY - listTop) / itemH);
-		if (canvasY >= listTop && idx >= 0 && idx < communityThemesCache.length) {
-			applyCommunityTheme(communityThemesCache[idx]);
+		const idx = Math.floor((canvasY - listTop) / itemH) + filesScrollOffset;
+		if (canvasY >= listTop && idx >= 0 && idx < contextLibrary.length) {
+			// Remove pill is on the right
+			if (canvasX >= 384 - 16 - 64) {
+				removeLibraryFile(contextLibrary[idx].id);
+			}
 		}
-	} else {
-		// Community list - each row is name + a "Load" pill, see renderScenePanel
+	} else if (scenePanelSubTab === 'code') {
+		// Code body is view/edit via keyboard; taps on list area are no-ops
+	} else if (scenePanelSubTab === 'community') {
 		const listTop = scenePanelListTop, itemH = 56;
 		const idx = Math.floor((canvasY - listTop) / itemH);
-		if (canvasY >= listTop && idx >= 0 && idx < communityScenesCache.length) {
+		if (canvasY < listTop || idx < 0) return;
+		if (communitySection === 'themes') {
+			if (idx < communityThemesCache.length) applyCommunityTheme(communityThemesCache[idx]);
+		} else if (idx < communityScenesCache.length) {
 			loadCommunityScene(communityScenesCache[idx]);
 		}
 	}
+}
+
+function handleChatPanelHit(uv) {
+	const canvasX = uv.x * 1024;
+	const canvasY = (1 - uv.y) * (chatCanvas?.height || 768);
+	const subHit = hitTestButtons(chatPanelSubTabBoxes, canvasX, canvasY);
+	if (subHit) handleMenuAction(subHit.action);
 }
 
 // ============================================================================
@@ -3664,6 +4016,15 @@ function onXRSelectStart(event) {
 	// When collapsed, the panels are hidden — nothing else is interactable.
 	if (uiCollapsed) return;
 
+	// Chat center panel (Scene|Theme subtabs)
+	if (chatPanel) {
+		const chatHits = raycaster.intersectObject(chatPanel);
+		if (chatHits.length > 0 && chatHits[0].uv) {
+			handleChatPanelHit(chatHits[0].uv);
+			return;
+		}
+	}
+
 	// Check scene manager panel hit
 	if (scenePanel) {
 		const sceneHits = raycaster.intersectObject(scenePanel);
@@ -3712,8 +4073,23 @@ function onXRSelectStart(event) {
 }
 
 function handleXRSend() {
+	// When the Code left-panel is active, Enter on the XR keyboard inserts a
+	// newline into the code buffer instead of sending chat (see dispatchKey).
+	if (scenePanelSubTab === 'code') return;
+
+	if (chatSection === 'theme') {
+		const message = inputText.trim();
+		if (!message && pendingThemeAttachments.length === 0) return;
+		if (dchatThemeChatInput) dchatThemeChatInput.value = message;
+		inputText = '';
+		if (chatInput) chatInput.value = '';
+		renderInputToCanvas();
+		sendThemeChat().then(() => renderChatToCanvas());
+		return;
+	}
+
 	const message = inputText.trim();
-	if (message) {
+	if (message || pendingAttachments.length > 0) {
 		sendMessage(message);
 		chatInput.value = '';
 		inputText = '';
@@ -4166,6 +4542,7 @@ async function clearContextLibrary() {
 }
 
 function renderContextFilesList() {
+	if (scenePanelSubTab === 'files') renderScenePanel();
 	if (!dchatFilesList) return;
 	dchatFilesList.innerHTML = '';
 	if (!contextLibrary.length) {
@@ -5547,9 +5924,17 @@ renderer.setAnimationLoop((time) => {
 						renderChatToCanvas();
 					}
 					if (hand === 'left' && Math.abs(thumbY) > THUMBSTICK_DEADZONE) {
-						// Left thumbstick: scroll scene list
-						sceneScrollOffset += thumbY < 0 ? 1 : -1;
-						sceneScrollOffset = Math.max(0, sceneScrollOffset);
+						// Left thumbstick: scroll active left-panel list
+						if (scenePanelSubTab === 'code') {
+							codeScrollOffset += thumbY < 0 ? 2 : -2;
+							codeScrollOffset = Math.max(0, codeScrollOffset);
+						} else if (scenePanelSubTab === 'files') {
+							filesScrollOffset += thumbY < 0 ? 1 : -1;
+							filesScrollOffset = Math.max(0, filesScrollOffset);
+						} else {
+							sceneScrollOffset += thumbY < 0 ? 1 : -1;
+							sceneScrollOffset = Math.max(0, sceneScrollOffset);
+						}
 						renderScenePanel();
 					}
 				}
