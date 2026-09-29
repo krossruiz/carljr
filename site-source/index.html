@@ -797,12 +797,33 @@
 			flex-shrink: 0;
 		}
 
+		.dchat-scene-info {
+			flex: 1;
+			min-width: 0;
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+		}
 		.dchat-scene-name {
 			flex: 1;
 			font-size: 13px;
 			overflow: hidden;
 			text-overflow: ellipsis;
 			white-space: nowrap;
+		}
+		.dchat-scene-info .dchat-scene-name {
+			flex: 0 1 auto;
+		}
+		.dchat-scene-dates {
+			font-size: 11px;
+			line-height: 1.3;
+			color: rgba(255, 255, 255, 0.45);
+			overflow: hidden;
+			display: -webkit-box;
+			-webkit-line-clamp: 2;
+			-webkit-box-orient: vertical;
+			white-space: normal;
+			word-break: break-word;
 		}
 
 		.dchat-scene-remove {

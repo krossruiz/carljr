@@ -2962,6 +2962,68 @@ function refreshCommunityScenes() {
 		});
 }
 
+
+/** Short local datetime for Community list meta (browser locale / TZ). */
+function formatCommunityDate(iso) {
+	if (!iso) return null;
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return null;
+	return d.toLocaleString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		year: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit'
+	});
+}
+
+/** Compact form for XR panel rows. */
+function formatCommunityDateShort(iso) {
+	if (!iso) return null;
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return null;
+	return d.toLocaleString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit'
+	});
+}
+
+/** Resolve created/updated from list payload (createdAt/updatedAt or uploadedAt fallback). */
+function communityTimestamps(item) {
+	if (!item) return { createdAt: null, updatedAt: null };
+	const updatedAt = item.updatedAt || item.uploadedAt || null;
+	const createdAt = item.createdAt || updatedAt || null;
+	return { createdAt, updatedAt };
+}
+
+function communityDatesMetaText(item, { short = false } = {}) {
+	const { createdAt, updatedAt } = communityTimestamps(item);
+	const fmt = short ? formatCommunityDateShort : formatCommunityDate;
+	const created = fmt(createdAt);
+	const modified = fmt(updatedAt);
+	if (!created && !modified) return '';
+	if (created && modified && created === modified) {
+		return short ? created : `Created ${created}`;
+	}
+	const parts = [];
+	if (created) parts.push(short ? `C ${created}` : `Created ${created}`);
+	if (modified) parts.push(short ? `M ${modified}` : `Modified ${modified}`);
+	return parts.join(' · ');
+}
+
+function appendCommunityDatesEl(parent, item) {
+	const text = communityDatesMetaText(item);
+	if (!text) return null;
+	const dates = document.createElement('div');
+	dates.className = 'dchat-scene-dates';
+	dates.textContent = text;
+	dates.title = text;
+	parent.appendChild(dates);
+	return dates;
+}
+
 function renderCommunitySceneList(scenes) {
 	communityScenesCache = scenes;
 	if (scenePanelSubTab === 'community') renderScenePanel();
@@ -2978,10 +3040,15 @@ function renderCommunitySceneList(scenes) {
 		const item = document.createElement('div');
 		item.className = 'dchat-scene-item';
 
+		const info = document.createElement('div');
+		info.className = 'dchat-scene-info';
+
 		const name = document.createElement('div');
 		name.className = 'dchat-scene-name';
 		name.textContent = cs.name;
 		name.title = cs.name + (cs.id ? ` (${cs.id})` : '');
+		info.appendChild(name);
+		appendCommunityDatesEl(info, cs);
 
 		const actions = document.createElement('div');
 		actions.className = 'dchat-scene-actions';
@@ -3004,7 +3071,7 @@ function renderCommunitySceneList(scenes) {
 		rename.addEventListener('click', () => showRenameModal(cs));
 
 		actions.append(load, share, rename);
-		item.append(name, actions);
+		item.append(info, actions);
 		dchatCommunityList.appendChild(item);
 	}
 }
@@ -3300,10 +3367,15 @@ function renderCommunityThemeList(themes) {
 		const item = document.createElement('div');
 		item.className = 'dchat-scene-item';
 
+		const info = document.createElement('div');
+		info.className = 'dchat-scene-info';
+
 		const name = document.createElement('div');
 		name.className = 'dchat-scene-name';
 		name.textContent = th.name;
 		name.title = th.name + (th.id ? ` (${th.id})` : '');
+		info.appendChild(name);
+		appendCommunityDatesEl(info, th);
 
 		const actions = document.createElement('div');
 		actions.className = 'dchat-scene-actions';
@@ -3319,7 +3391,7 @@ function renderCommunityThemeList(themes) {
 		rename.addEventListener('click', () => showRenameModal(th, 'theme'));
 
 		actions.append(apply, rename);
-		item.append(name, actions);
+		item.append(info, actions);
 		dchatThemesList.appendChild(item);
 	}
 }
@@ -3890,7 +3962,7 @@ function renderScenePanel() {
 
 			const listTop = sepY + 8;
 			scenePanelListTop = listTop;
-			const itemH = 56;
+			const itemH = 64;
 			const listBottom = h - 16;
 			const maxVisible = Math.floor((listBottom - listTop) / itemH);
 
@@ -3917,7 +3989,17 @@ function renderScenePanel() {
 					let dName = th.name;
 					while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
 					if (dName !== th.name) dName += '\u2026';
-					ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
+					ctx.fillText(dName, nameX, itemY + 22);
+
+					const dateLine = communityDatesMetaText(th, { short: true });
+					if (dateLine) {
+						ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+						ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+						let dDate = dateLine;
+						while (ctx.measureText(dDate).width > maxNameW && dDate.length > 3) dDate = dDate.slice(0, -1);
+						if (dDate !== dateLine) dDate += '\u2026';
+						ctx.fillText(dDate, nameX, itemY + 40);
+					}
 
 					const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
 					ctx.fillStyle = 'rgba(16, 185, 129, 0.45)';
@@ -3942,7 +4024,7 @@ function renderScenePanel() {
 
 			const listTop = sepY + 8;
 			scenePanelListTop = listTop;
-			const itemH = 56;
+			const itemH = 64;
 			const listBottom = h - 16;
 			const maxVisible = Math.floor((listBottom - listTop) / itemH);
 
@@ -3968,7 +4050,17 @@ function renderScenePanel() {
 					let dName = cs.name;
 					while (ctx.measureText(dName).width > maxNameW && dName.length > 3) dName = dName.slice(0, -1);
 					if (dName !== cs.name) dName += '\u2026';
-					ctx.fillText(dName, nameX, itemY + itemH / 2 + 5);
+					ctx.fillText(dName, nameX, itemY + 22);
+
+					const dateLine = communityDatesMetaText(cs, { short: true });
+					if (dateLine) {
+						ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+						ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+						let dDate = dateLine;
+						while (ctx.measureText(dDate).width > maxNameW && dDate.length > 3) dDate = dDate.slice(0, -1);
+						if (dDate !== dateLine) dDate += '\u2026';
+						ctx.fillText(dDate, nameX, itemY + 40);
+					}
 
 					const pillW = 60, pillH = itemH - 16, pillX = w - 16 - pillW, pillY = itemY + 8;
 					ctx.fillStyle = '#f4f4f8';
@@ -4057,7 +4149,7 @@ function handleScenePanelHit(uv) {
 	} else if (scenePanelSubTab === 'code') {
 		// Code body is view/edit via keyboard; taps on list area are no-ops
 	} else if (scenePanelSubTab === 'community') {
-		const listTop = scenePanelListTop, itemH = 56;
+		const listTop = scenePanelListTop, itemH = 64;
 		const idx = Math.floor((canvasY - listTop) / itemH);
 		if (canvasY < listTop || idx < 0) return;
 		if (communitySection === 'themes') {

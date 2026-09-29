@@ -555,6 +555,26 @@ function sanitizeSceneName(name) {
 	return (cleaned || 'Untitled').slice(0, 80);
 }
 
+
+// List endpoints avoid fetching blob bodies (name lives in the pathname).
+// createdAt/updatedAt still ship for the Community UI:
+// - updatedAt ≈ blob uploadedAt (rewrite on rename/upload)
+// - createdAt guessed from newSceneId()'s Date.now().toString(36) prefix;
+//   falls back to uploadedAt for legacy/unknown ids.
+function createdAtGuessFromId(id) {
+	if (!id || id.length <= 8) return null;
+	const tsPart = id.slice(0, -8);
+	const ms = parseInt(tsPart, 36);
+	if (!Number.isFinite(ms) || ms < 1e12 || ms > 4e12) return null;
+	return new Date(ms).toISOString();
+}
+
+function listItemTimestamps(meta) {
+	const updatedAt = meta.uploadedAt || null;
+	const createdAt = createdAtGuessFromId(meta.id) || updatedAt;
+	return { createdAt, updatedAt };
+}
+
 function requestOrigin(req) {
 	const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
 	const host = (req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`).split(',')[0].trim();
@@ -717,7 +737,7 @@ app.post('/api/community-scenes', async (req, res) => {
 			ok: true,
 			url: blob.url,
 			pathname: blob.pathname || pathname,
-			scene: { id, name, uploadedAt: now, size: blob.size },
+			scene: { id, name, uploadedAt: now, createdAt: record.createdAt, updatedAt: record.updatedAt, size: blob.size },
 			...sceneUrls(req, id)
 		});
 	} catch (error) {
@@ -738,6 +758,7 @@ app.get('/api/community-scenes', async (req, res) => {
 			pathname: s.pathname,
 			uploadedAt: s.uploadedAt,
 			size: s.size,
+			...listItemTimestamps(s),
 			...urls(s.id)
 		}));
 		res.json({ scenes });
@@ -783,7 +804,7 @@ app.patch('/api/community-scenes/:id', async (req, res) => {
 			ok: true,
 			url: blob.url,
 			pathname: blob.pathname || newPathname,
-			scene: { id, name, uploadedAt: record.updatedAt, size: blob.size },
+			scene: { id, name, uploadedAt: record.updatedAt, createdAt: record.createdAt || null, updatedAt: record.updatedAt, size: blob.size },
 			...sceneUrls(req, id)
 		});
 	} catch (error) {
@@ -901,7 +922,7 @@ app.post('/api/community-themes', async (req, res) => {
 			ok: true,
 			url: blob.url,
 			pathname: blob.pathname || pathname,
-			theme: { id, name: cleaned.name, uploadedAt: now, size: blob.size }
+			theme: { id, name: cleaned.name, uploadedAt: now, createdAt: record.createdAt, updatedAt: record.updatedAt, size: blob.size }
 		});
 	} catch (error) {
 		console.error('Theme upload error:', error);
@@ -919,7 +940,8 @@ app.get('/api/community-themes', async (req, res) => {
 			url: t.url,
 			pathname: t.pathname,
 			uploadedAt: t.uploadedAt,
-			size: t.size
+			size: t.size,
+			...listItemTimestamps(t)
 		}));
 		res.json({ themes });
 	} catch (error) {
@@ -964,7 +986,7 @@ app.patch('/api/community-themes/:id', async (req, res) => {
 			ok: true,
 			url: blob.url,
 			pathname: blob.pathname || newPathname,
-			theme: { id, name, uploadedAt: record.updatedAt, size: blob.size }
+			theme: { id, name, uploadedAt: record.updatedAt, createdAt: record.createdAt || null, updatedAt: record.updatedAt, size: blob.size }
 		});
 	} catch (error) {
 		console.error('Theme rename error:', error);
