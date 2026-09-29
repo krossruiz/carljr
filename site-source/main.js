@@ -24,7 +24,7 @@ const KEYBOARD_PANEL_GAP = 0.05;
 const SIDE_PANEL_WIDTH = 0.3;
 const SIDE_PANEL_HEIGHT = 0.8;
 const SIDE_PANEL_GAP = 0.06;
-const SCENE_PANEL_WIDTH = 0.45;
+const SCENE_PANEL_WIDTH = 0.52;
 const SCENE_PANEL_HEIGHT = 0.8;
 const SCENE_PANEL_GAP = 0.06;
 
@@ -172,6 +172,11 @@ const ENV_MODE_BUTTONS = [
 const EXIT_XR_BUTTON = [
 	{ id: 'exitXr', label: 'Exit AR/VR', action: 'env:exit', variant: 'warning' }
 ];
+// Mirrors desktop Environment → Navigation (WASD / First Person). XR grip still cycles Off.
+const NAV_MODE_BUTTONS = [
+	{ id: 'navFree', label: 'WASD', action: 'env:nav:free' },
+	{ id: 'navPlanar', label: 'First Person', action: 'env:nav:planar' }
+];
 function getLayDownButton() {
 	return {
 		id: 'layDown',
@@ -184,7 +189,8 @@ const SCENES_BUTTONS = [
 	{ id: 'export', label: 'Export', action: 'scenes:export', variant: 'accent' },
 	{ id: 'importFile', label: 'Import File', action: 'scenes:importFile' },
 	{ id: 'importFolder', label: 'Import Folder', action: 'scenes:importFolder' },
-	{ id: 'loadSaved', label: 'Load Saved', action: 'scenes:loadSaved', variant: 'success' }
+	{ id: 'loadSaved', label: 'Load Saved', action: 'scenes:loadSaved', variant: 'success' },
+	{ id: 'clearScene', label: 'Clear scene', action: 'scenes:clear', variant: 'secondary' }
 ];
 const EXPORT_COMBINED_BUTTON = [
 	{ id: 'exportCombined', label: 'Export Combined', action: 'scenes:exportCombined', variant: 'warning' }
@@ -215,6 +221,8 @@ const SCENE_PANEL_SUB_TABS = [
 	{ id: 'code', label: 'Code', action: 'panel:code' },
 	{ id: 'community', label: 'Community', action: 'panel:community' }
 ];
+// Desktop top-level tab order for reference (Chat + Environment are separate XR meshes):
+// Chat (Scene|Theme) · Environment · Scenes · Files · Code · Community (Scenes|Themes)
 const COMMUNITY_NESTED_TABS = [
 	{ id: 'scenes', label: 'Scenes', action: 'communitySection:scenes' },
 	{ id: 'themes', label: 'Themes', action: 'communitySection:themes' }
@@ -246,6 +254,18 @@ function handleMenuAction(action) {
 		case 'env:layDown':
 			toggleLayDownView();
 			break;
+		case 'env:nav:free':
+			locomotionMode = 'free';
+			if (dchatNavType) dchatNavType.value = 'free';
+			updateStatus('Locomotion: WASD/free-fly', 'connected');
+			renderSidePanel();
+			break;
+		case 'env:nav:planar':
+			locomotionMode = 'planar';
+			if (dchatNavType) dchatNavType.value = 'planar';
+			updateStatus('Locomotion: First Person', 'connected');
+			renderSidePanel();
+			break;
 		case 'scenes:export':
 			showExportModal(false);
 			break;
@@ -262,6 +282,9 @@ function handleMenuAction(action) {
 			if ((loadedScenes.some(s => s.active) || executedCodeBlocks.length > 0) && loadedScenes.length > 0) {
 				showExportModal(true);
 			}
+			break;
+		case 'scenes:clear':
+			clearSceneContent();
 			break;
 		case 'files:upload':
 			dchatFilesInput?.click();
@@ -586,6 +609,9 @@ let themeChatLoading = false;
 // by handleSidePanelHit/handleScenePanelHit (see menuSystem.js hitTestButtons).
 let sidePanelEnvButtonBoxes = [];
 let sidePanelExitButtonBoxes = [];
+let sidePanelNavButtonBoxes = [];
+let sidePanelWheelHit = { cx: 128, cy: 290, r: 95, innerR: 20 };
+let sidePanelSliderHit = { y: 420, h: 30, pad: 24 };
 let scenePanelButtonBoxes = [];
 let scenePanelSubTabBoxes = [];
 let scenePanelNestedTabBoxes = []; // Community Scenes|Themes nested tabs
@@ -2064,33 +2090,61 @@ function renderSidePanel() {
 	roundRect(ctx, 0, 0, w, h, 16);
 	ctx.fill();
 
-	// --- AR/VR Toggle Button (shared spec - see ENV_MODE_BUTTONS/handleMenuAction) ---
+	// Header — matches desktop Environment tab title
+	ctx.fillStyle = 'rgba(99, 102, 241, 0.3)';
+	roundRect(ctx, 0, 0, w, 40, 16, true);
+	ctx.fill();
+	ctx.font = 'bold 18px -apple-system, BlinkMacSystemFont, sans-serif';
+	ctx.fillStyle = '#ffffff';
+	ctx.textAlign = 'center';
+	ctx.fillText('Environment', w / 2, 28);
+
+	// --- AR/VR Toggle (shared spec - see ENV_MODE_BUTTONS/handleMenuAction) ---
 	const envButtons = ENV_MODE_BUTTONS.map(b => ({
 		...b,
 		variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
 	}));
-	const envLayout = buildButtonLayout(envButtons, { width: w - 32, x: 16, y: 16, height: 56, perRow: 2, gap: 4 });
+	const envLayout = buildButtonLayout(envButtons, { width: w - 32, x: 16, y: 48, height: 44, perRow: 2, gap: 4 });
 	sidePanelEnvButtonBoxes = envLayout.boxes;
-	drawButtonsToCanvas(ctx, sidePanelEnvButtonBoxes, { fontSize: 16 });
+	drawButtonsToCanvas(ctx, sidePanelEnvButtonBoxes, { fontSize: 14 });
 
-	// Exit AR/VR + Lay down / Sit up (same row; lay-down remaps view for supine use)
-	const exitY = 16 + envLayout.totalHeight + 8;
+	// Exit AR/VR + Lay down / Sit up (XR-only; desktop has no immersive session)
+	const exitY = 48 + envLayout.totalHeight + 6;
 	const exitLayButtons = [...EXIT_XR_BUTTON, getLayDownButton()];
-	const exitLayout = buildButtonLayout(exitLayButtons, { width: w - 32, x: 16, y: exitY, height: 40, perRow: 2, gap: 4 });
+	const exitLayout = buildButtonLayout(exitLayButtons, { width: w - 32, x: 16, y: exitY, height: 34, perRow: 2, gap: 4 });
 	sidePanelExitButtonBoxes = exitLayout.boxes;
-	drawButtonsToCanvas(ctx, sidePanelExitButtonBoxes, { fontSize: 15 });
+	drawButtonsToCanvas(ctx, sidePanelExitButtonBoxes, { fontSize: 13 });
 
-	// --- Section label ---
-	ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
+	// Navigation — same choices as desktop Environment → Navigation
+	const navY = exitY + exitLayout.totalHeight + 6;
+	ctx.font = '13px -apple-system, BlinkMacSystemFont, sans-serif';
 	ctx.fillStyle = 'rgba(255,255,255,0.4)';
 	ctx.textAlign = 'center';
-	ctx.fillText('BG Color', w / 2, exitY + exitLayout.totalHeight + 28);
+	ctx.fillText('Navigation', w / 2, navY + 12);
+	const navButtons = NAV_MODE_BUTTONS.map(b => ({
+		...b,
+		variant: (b.action === 'env:nav:free' && locomotionMode === 'free')
+			|| (b.action === 'env:nav:planar' && locomotionMode === 'planar')
+			? 'active' : 'inactiveToggle'
+	}));
+	const navLayout = buildButtonLayout(navButtons, { width: w - 32, x: 16, y: navY + 18, height: 32, perRow: 2, gap: 4 });
+	sidePanelNavButtonBoxes = navLayout.boxes;
+	drawButtonsToCanvas(ctx, sidePanelNavButtonBoxes, { fontSize: 12 });
 
-	// --- Color Wheel (center area) ---
+	const controlsTop = navY + 18 + navLayout.totalHeight + 10;
+
+	// --- Section label ---
+	ctx.font = '14px -apple-system, BlinkMacSystemFont, sans-serif';
+	ctx.fillStyle = 'rgba(255,255,255,0.4)';
+	ctx.textAlign = 'center';
+	ctx.fillText('Background Color', w / 2, controlsTop + 14);
+
+	// --- Color Wheel (below nav; keep radius so it still fits) ---
 	const wheelCX = w / 2;
-	const wheelCY = 290;
-	const wheelR = 95;
-	const wheelInnerR = 20;
+	const wheelCY = controlsTop + 120;
+	const wheelR = 88;
+	const wheelInnerR = 18;
+	sidePanelWheelHit = { cx: wheelCX, cy: wheelCY, r: wheelR, innerR: wheelInnerR };
 
 	// Draw color wheel using arc segments
 	for (let angle = 0; angle < 360; angle += 1) {
@@ -2135,10 +2189,11 @@ function renderSidePanel() {
 	ctx.stroke();
 
 	// --- Brightness Slider (below wheel) ---
-	const sliderY = 420;
-	const sliderH = 30;
+	const sliderY = wheelCY + wheelR + 28;
+	const sliderH = 28;
 	const sliderPad = 24;
 	const sliderW = w - sliderPad * 2;
+	sidePanelSliderHit = { y: sliderY, h: sliderH, pad: sliderPad };
 
 	ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
 	ctx.fillStyle = 'rgba(255,255,255,0.4)';
@@ -2165,8 +2220,8 @@ function renderSidePanel() {
 	ctx.stroke();
 
 	// --- Color Preview ---
-	const prevY = 480;
-	const prevH = 50;
+	const prevY = sliderY + sliderH + 18;
+	const prevH = 44;
 	ctx.fillStyle = hslToRgbString(vrBgHue, vrBgSat, vrBgLight);
 	roundRect(ctx, sliderPad, prevY, sliderW, prevH, 10);
 	ctx.fill();
@@ -2180,14 +2235,14 @@ function renderSidePanel() {
 	// Dim overlay if in AR mode (color wheel inactive)
 	if (!isVRMode) {
 		ctx.fillStyle = 'rgba(20, 20, 30, 0.6)';
-		const dimTop = 130; // below AR/VR + Exit buttons
+		const dimTop = controlsTop;
 		roundRect(ctx, 0, dimTop, w, h - dimTop - 8, 0);
 		ctx.fill();
-		ctx.font = '18px -apple-system, BlinkMacSystemFont, sans-serif';
+		ctx.font = '16px -apple-system, BlinkMacSystemFont, sans-serif';
 		ctx.fillStyle = 'rgba(255,255,255,0.5)';
 		ctx.textAlign = 'center';
-		ctx.fillText('Switch to VR', w / 2, 545);
-		ctx.fillText('to customize', w / 2, 568);
+		ctx.fillText('Switch to VR', w / 2, wheelCY);
+		ctx.fillText('to customize', w / 2, wheelCY + 22);
 	}
 
 	ctx.textAlign = 'left';
@@ -2244,14 +2299,19 @@ function handleSidePanelHit(uv) {
 		return;
 	}
 
+	const navHit = hitTestButtons(sidePanelNavButtonBoxes, canvasX, canvasY);
+	if (navHit) {
+		handleMenuAction(navHit.action);
+		return;
+	}
+
 	// Only handle color controls in VR mode
 	if (!isVRMode) return;
 
-	// Color Wheel (centered at 128, 290, radius 95)
-	const wheelCX = 128;
-	const wheelCY = 290;
-	const wheelR = 95;
-	const wheelInnerR = 20;
+	const wheelCX = sidePanelWheelHit.cx;
+	const wheelCY = sidePanelWheelHit.cy;
+	const wheelR = sidePanelWheelHit.r;
+	const wheelInnerR = sidePanelWheelHit.innerR;
 	const dx = canvasX - wheelCX;
 	const dy = canvasY - wheelCY;
 	const dist = Math.sqrt(dx * dx + dy * dy);
@@ -2264,9 +2324,10 @@ function handleSidePanelHit(uv) {
 		return;
 	}
 
-	// Brightness slider (y 420-450 on canvas)
-	if (canvasY >= 410 && canvasY <= 460) {
-		const sliderPad = 24;
+	const sliderY = sidePanelSliderHit.y;
+	const sliderH = sidePanelSliderHit.h;
+	const sliderPad = sidePanelSliderHit.pad;
+	if (canvasY >= sliderY - 10 && canvasY <= sliderY + sliderH + 10) {
 		const sliderW = 256 - sliderPad * 2;
 		vrBgLight = Math.max(0.02, Math.min(0.95, (canvasX - sliderPad) / sliderW));
 		applyEnvironmentMode();
@@ -2510,6 +2571,17 @@ function clearUserObjects() {
 			disposeRecursive(child);
 		}
 	}
+	// Walk-in-AR may have adopted user meshes under arPlacementRoot (a system
+	// object), so also strip those — keep the placement marker itself.
+	if (typeof arPlacementRoot !== 'undefined' && arPlacementRoot) {
+		for (let i = arPlacementRoot.children.length - 1; i >= 0; i--) {
+			const child = arPlacementRoot.children[i];
+			if (child === arPlacementMarker) continue;
+			if (systemObjectIds.has(child.uuid)) continue;
+			arPlacementRoot.remove(child);
+			disposeRecursive(child);
+		}
+	}
 	window._vrAnimations = [];
 	const overlay = document.getElementById('overlay-root');
 	for (let i = overlay.children.length - 1; i >= 0; i--) {
@@ -2518,6 +2590,31 @@ function clearUserObjects() {
 			overlay.removeChild(child);
 		}
 	}
+}
+
+/** Remove every user-placed object from the live 3D scene. Keeps imported
+ *  scene files in the Scenes list (unchecked), Files library, and Community. */
+function clearSceneContent() {
+	const userRoots = scene.children.filter(c => !systemObjectIds.has(c.uuid)).length;
+	const arExtras = (arPlacementRoot
+		? arPlacementRoot.children.filter(c => c !== arPlacementMarker && !systemObjectIds.has(c.uuid)).length
+		: 0);
+	const activeCount = loadedScenes.filter(s => s.active).length;
+	const sessionCount = executedCodeBlocks.length;
+	if (userRoots + arExtras + activeCount + sessionCount === 0) {
+		updateStatus('Scene is already empty', '');
+		return;
+	}
+	if (!window.confirm(
+		'Clear all objects from the scene? Imported scene files stay in the list (unchecked). Files library and Community uploads are not affected.'
+	)) return;
+
+	for (const sc of loadedScenes) sc.active = false;
+	executedCodeBlocks = [];
+	clearUserObjects();
+	notifyCodeEditorExternalChange();
+	renderScenePanel();
+	updateStatus('Scene cleared', 'connected');
 }
 
 function rebuildSceneFromActive() {
@@ -3502,14 +3599,15 @@ function renderScenePanel() {
 		...t,
 		variant: scenePanelSubTab === t.id ? 'active' : 'inactiveToggle'
 	}));
+	// Same order as desktop tabs after Chat/Environment: Scenes · Files · Code · Community
 	const subTabLayout = buildButtonLayout(subTabButtons, {
-		width: w - 24, x: 12, y: 58, height: 32, perRow: 4, gap: 4
+		width: w - 24, x: 12, y: 56, height: 36, perRow: 4, gap: 6
 	});
 	scenePanelSubTabBoxes = subTabLayout.boxes;
 	scenePanelNestedTabBoxes = [];
-	drawButtonsToCanvas(ctx, scenePanelSubTabBoxes, { fontSize: 11 });
+	drawButtonsToCanvas(ctx, scenePanelSubTabBoxes, { fontSize: 12 });
 
-	let contentTop = 58 + subTabLayout.totalHeight + 10;
+	let contentTop = 56 + subTabLayout.totalHeight + 10;
 	scenePanelButtonBoxes = [];
 
 	if (scenePanelSubTab === 'scenes') {
@@ -3900,8 +3998,10 @@ function loadSceneThumbnails() {
 }
 
 function handleScenePanelHit(uv) {
-	const canvasX = uv.x * 384;
-	const canvasY = (1 - uv.y) * 768;
+	const canvasW = sceneCanvas?.width || 384;
+	const canvasH = sceneCanvas?.height || 768;
+	const canvasX = uv.x * canvasW;
+	const canvasY = (1 - uv.y) * canvasH;
 
 	const subTabHit = hitTestButtons(scenePanelSubTabBoxes, canvasX, canvasY);
 	if (subTabHit) {
@@ -3927,7 +4027,7 @@ function handleScenePanelHit(uv) {
 		if (canvasY >= listTop && canvasY < listTop + maxVisible * itemH) {
 			const idx = Math.floor((canvasY - listTop) / itemH) + sceneScrollOffset;
 			if (idx >= 0 && idx < loadedScenes.length) {
-				if (canvasX >= 384 - 36) {
+				if (canvasX >= canvasW - 36) {
 					loadedScenes.splice(idx, 1);
 					rebuildSceneFromActive();
 					renderScenePanel();
@@ -3942,7 +4042,7 @@ function handleScenePanelHit(uv) {
 			return;
 		}
 		const combHit = hitTestButtons(buildButtonLayout(EXPORT_COMBINED_BUTTON, {
-			width: 384 - 24, x: 12, y: 700, height: 48, perRow: 1
+			width: canvasW - 24, x: 12, y: 700, height: 48, perRow: 1
 		}).boxes, canvasX, canvasY);
 		if (combHit) handleMenuAction(combHit.action);
 	} else if (scenePanelSubTab === 'files') {
@@ -3950,7 +4050,7 @@ function handleScenePanelHit(uv) {
 		const idx = Math.floor((canvasY - listTop) / itemH) + filesScrollOffset;
 		if (canvasY >= listTop && idx >= 0 && idx < contextLibrary.length) {
 			// Remove pill is on the right
-			if (canvasX >= 384 - 16 - 64) {
+			if (canvasX >= canvasW - 16 - 64) {
 				removeLibraryFile(contextLibrary[idx].id);
 			}
 		}
@@ -5393,12 +5493,12 @@ filesPickerModal?.addEventListener('click', (e) => {
 	if (e.target === filesPickerModal) closeFilesPicker();
 });
 
-dchatFilesUpload?.addEventListener('click', () => dchatFilesInput?.click());
+dchatFilesUpload?.addEventListener('click', () => handleMenuAction('files:upload'));
 dchatFilesInput?.addEventListener('change', (e) => {
 	addFilesToLibrary(e.target.files);
 	dchatFilesInput.value = '';
 });
-dchatFilesClear?.addEventListener('click', () => clearContextLibrary());
+dchatFilesClear?.addEventListener('click', () => handleMenuAction('files:clear'));
 
 if (desktopMicButton) {
 	desktopMicButton.addEventListener('click', toggleMicAlwaysOn);
