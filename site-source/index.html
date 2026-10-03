@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 	<meta charset="UTF-8" />
-	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 	<base href="/" />
 	<title>Claude VR Chat</title>
 	<style>
@@ -12,6 +12,8 @@
 			background: transparent;
 			overflow: hidden;
 			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+			-webkit-text-size-adjust: 100%;
+			text-size-adjust: 100%;
 		}
 		#app {
 			width: 100%;
@@ -246,11 +248,11 @@
 		#desktop-chat {
 			/* Themeable chrome (editor window only — not the 3D scene).
 			   Themes set these vars / optional #dchat-theme-style custom CSS. */
-			--dchat-bg: rgba(22, 22, 32, 0.82);
-			--dchat-border: rgba(255, 255, 255, 0.08);
+			--dchat-bg: rgba(22, 22, 32, 0.05);
+			--dchat-border: #ffffff;
 			--dchat-text: #ffffff;
 			--dchat-text-muted: rgba(255, 255, 255, 0.55);
-			--dchat-header-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(139, 92, 246, 0.25));
+			--dchat-header-bg: rgba(22, 22, 32, 0.05);
 			--dchat-tabs-bg: rgba(255, 255, 255, 0.03);
 			--dchat-tab-color: rgba(255, 255, 255, 0.5);
 			--dchat-tab-active-bg: rgba(255, 255, 255, 0.09);
@@ -263,6 +265,7 @@
 			container-type: inline-size;
 			container-name: desktop-chat;
 			position: fixed;
+			box-sizing: border-box;
 			top: 80px;
 			left: 24px;
 			width: 380px;
@@ -274,11 +277,11 @@
 			display: flex;
 			flex-direction: column;
 			background: var(--dchat-bg);
-			border: 1px solid var(--dchat-border);
+			border: 2px solid var(--dchat-border);
 			border-radius: var(--dchat-radius);
-			box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
-			backdrop-filter: blur(18px);
-			-webkit-backdrop-filter: blur(18px);
+			box-shadow: 0 12px 48px rgba(0, 0, 0, 0.28);
+			backdrop-filter: none;
+			-webkit-backdrop-filter: none;
 			/* visible so edge/corner resize handles outside the box stay clickable;
 			   keep horizontal clip so flex children (model select) cannot paint past the panel */
 			overflow: visible;
@@ -290,6 +293,36 @@
 		}
 
 		#desktop-chat.hidden { display: none; }
+
+		/* Phone portrait: default 380px + left:24px clips the header minimize
+		   button (~390px wide). Stretch between safe-area insets instead of a
+		   fixed width, and keep resize handles inside so they cannot widen the
+		   layout viewport (iOS then paints slightly zoomed). 16px fields stop
+		   Safari from zooming on focus. Desktop / VR unchanged (this query only). */
+		@media (max-width: 720px) {
+			#desktop-chat:not(.expanded) {
+				top: max(12px, env(safe-area-inset-top, 0px));
+				left: max(8px, env(safe-area-inset-left, 0px));
+				right: max(8px, env(safe-area-inset-right, 0px));
+				width: auto;
+				max-width: none;
+				min-width: 0;
+				height: min(520px, calc(100vh - 24px));
+				height: min(520px, calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)));
+				max-height: calc(100vh - 16px);
+				max-height: calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+			}
+			#desktop-chat.expanded {
+				top: max(8px, env(safe-area-inset-top, 0px)) !important;
+				left: max(8px, env(safe-area-inset-left, 0px)) !important;
+				right: auto !important;
+				width: calc(100vw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)) !important;
+				width: calc(100dvw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)) !important;
+				height: calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
+			}
+			#desktop-chat-header-buttons,
+			#desktop-chat-header-buttons button { flex-shrink: 0; }
+		}
 
 		#desktop-chat.dragging, #desktop-chat.resizing {
 			user-select: none;
@@ -486,6 +519,7 @@
 		#desktop-chat-header-buttons {
 			display: flex;
 			gap: 6px;
+			flex-shrink: 0;
 		}
 
 		#desktop-chat-header-buttons button {
@@ -1539,6 +1573,24 @@
 		#dchat-code-editor:focus {
 			border-color: rgba(99, 102, 241, 0.55);
 			background: rgba(0, 0, 0, 0.45);
+		}
+
+		/* After the base field/handle rules so these win on phones. */
+		@media (max-width: 720px) {
+			#desktop-chat-input,
+			#desktop-chat select,
+			#desktop-chat textarea,
+			#dchat-code-editor {
+				font-size: 16px;
+			}
+			.dchat-resize.edge-n { top: 0; }
+			.dchat-resize.edge-s { bottom: 0; }
+			.dchat-resize.edge-e { right: 0; }
+			.dchat-resize.edge-w { left: 0; }
+			.dchat-resize.corner-nw { top: 0; left: 0; }
+			.dchat-resize.corner-ne { top: 0; right: 0; }
+			.dchat-resize.corner-sw { bottom: 0; left: 0; }
+			.dchat-resize.corner-se { bottom: 0; right: 0; }
 		}
 		#dchat-code-editor::-webkit-scrollbar { width: 8px; }
 		#dchat-code-editor::-webkit-scrollbar-thumb {

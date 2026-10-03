@@ -3151,11 +3151,11 @@ async function renameCommunityScene() {
 const DEFAULT_THEME = {
 	name: 'Default',
 	cssVars: {
-		'--dchat-bg': 'rgba(22, 22, 32, 0.82)',
-		'--dchat-border': 'rgba(255, 255, 255, 0.08)',
+		'--dchat-bg': 'rgba(22, 22, 32, 0.05)',
+		'--dchat-border': '#ffffff',
 		'--dchat-text': '#ffffff',
 		'--dchat-text-muted': 'rgba(255, 255, 255, 0.55)',
-		'--dchat-header-bg': 'linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(139, 92, 246, 0.25))',
+		'--dchat-header-bg': 'rgba(22, 22, 32, 0.05)',
 		'--dchat-tabs-bg': 'rgba(255, 255, 255, 0.03)',
 		'--dchat-tab-color': 'rgba(255, 255, 255, 0.5)',
 		'--dchat-tab-active-bg': 'rgba(255, 255, 255, 0.09)',
@@ -5639,15 +5639,58 @@ function restoreDesktopChatSize() {
 		if (!raw) return;
 		const s = JSON.parse(raw);
 		if (!s || !s.width || !s.height) return;
-		const w = Math.max(280, Math.min(window.innerWidth - 16, s.width));
-		const h = Math.max(220, Math.min(window.innerHeight - 16, s.height));
-		const left = Math.max(0, Math.min(window.innerWidth - w, s.left ?? 24));
-		const top = Math.max(0, Math.min(window.innerHeight - h, s.top ?? 80));
+		const narrow = window.matchMedia('(max-width: 720px)').matches;
+		const margin = narrow ? 8 : 0;
+		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+		const maxW = Math.max(narrow ? 160 : 280, vw - (narrow ? margin * 2 : 16));
+		const maxH = Math.max(narrow ? 180 : 220, vh - (narrow ? margin * 2 : 16));
+		const minW = Math.min(280, maxW);
+		const minH = Math.min(220, maxH);
+		const w = Math.max(minW, Math.min(maxW, s.width));
+		const h = Math.max(minH, Math.min(maxH, s.height));
+		const left = Math.max(margin, Math.min(vw - w - margin, s.left ?? 24));
+		const top = Math.max(margin, Math.min(vh - h - margin, s.top ?? 80));
 		desktopChat.style.width = `${w}px`;
 		desktopChat.style.height = `${h}px`;
 		desktopChat.style.left = `${left}px`;
 		desktopChat.style.top = `${top}px`;
+		if (narrow) desktopChat.style.right = 'auto';
 	} catch { /* ignore */ }
+}
+
+// Saved geometry (or a first layout pass) can still hang off a phone.
+// Only nudges when the panel overflows a narrow screen, so desktop stays put.
+// Uses the layout viewport (innerWidth/Height), not visualViewport offsets,
+// so the iOS URL bar showing/hiding does not slide the window.
+function fitDesktopChatToViewport() {
+	if (!desktopChat || desktopChat.classList.contains('expanded')) return;
+	if (!window.matchMedia('(max-width: 720px)').matches) return;
+	const margin = 8;
+	const vw = window.innerWidth;
+	const vh = window.innerHeight;
+	const rect = desktopChat.getBoundingClientRect();
+	const maxW = Math.max(120, vw - margin * 2);
+	const maxH = Math.max(160, vh - margin * 2);
+	const overflows =
+		rect.left < margin - 1 ||
+		rect.top < margin - 1 ||
+		rect.right > vw - margin + 1 ||
+		rect.bottom > vh - margin + 1;
+	if (!overflows) return;
+	const w = Math.min(rect.width, maxW);
+	const h = Math.min(rect.height, maxH);
+	let left = rect.left;
+	let top = rect.top;
+	if (left + w > vw - margin) left = vw - margin - w;
+	if (top + h > vh - margin) top = vh - margin - h;
+	if (left < margin) left = margin;
+	if (top < margin) top = margin;
+	desktopChat.style.width = `${Math.round(w)}px`;
+	desktopChat.style.height = `${Math.round(h)}px`;
+	desktopChat.style.left = `${Math.round(left)}px`;
+	desktopChat.style.top = `${Math.round(top)}px`;
+	desktopChat.style.right = 'auto';
 }
 
 function toggleDesktopChatExpanded() {
@@ -5684,6 +5727,9 @@ function toggleDesktopChatExpanded() {
 }
 
 restoreDesktopChatSize();
+fitDesktopChatToViewport();
+window.addEventListener('resize', fitDesktopChatToViewport);
+window.addEventListener('orientationchange', fitDesktopChatToViewport);
 
 // Dragging via the header. Uses document-level mouse listeners (rather than
 // pointer capture) so it keeps tracking even if the cursor briefly leaves the
