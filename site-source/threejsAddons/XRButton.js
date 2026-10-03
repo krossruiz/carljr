@@ -1,9 +1,6 @@
 /**
- * A utility class for creating a button that starts an immersive WebXR
- * session — AR passthrough where available (Quest standalone), falling
- * back to plain VR for PCVR headsets connected via Link/Air Link/SteamVR
- * (Quest 3, Quest 2/Pro, Valve Index, HTC Vive, Windows Mixed Reality,
- * etc.) that don't expose passthrough to the browser.
+ * A utility class for creating a button that starts an immersive-vr
+ * WebXR session. immersive-ar is intentionally not offered.
  *
  * Usage:
  * document.body.appendChild( XRButton.createButton( renderer ) );
@@ -14,11 +11,10 @@ class XRButton {
 	 * Constructs a new XR button.
 	 *
 	 * @param {WebGLRenderer|WebGPURenderer} renderer - The renderer.
-	 * @param {XRSessionInit} [sessionInit] - Optional session configuration,
-	 *   applied to whichever mode ('immersive-ar' or 'immersive-vr') ends up
-	 *   being used.
-	 * @return {HTMLElement} The button or an error message if neither
-	 *   'immersive-ar' nor 'immersive-vr' is supported.
+	 * @param {XRSessionInit} [sessionInit] - Optional session configuration
+	 *   applied to the immersive-vr session.
+	 * @return {HTMLElement} The button or an error message if
+	 *   'immersive-vr' is not supported.
 	 */
 	static createButton( renderer, sessionInit = {} ) {
 
@@ -26,7 +22,8 @@ class XRButton {
 
 		function showEnterXR( mode ) {
 
-			const isAR = mode === 'immersive-ar';
+			// Only immersive-vr is ever requested. Ignore any other mode.
+			if ( mode !== 'immersive-vr' ) mode = 'immersive-vr';
 			let currentSession = null;
 
 			async function onSessionStarted( session ) {
@@ -41,7 +38,7 @@ class XRButton {
 				}
 
 				await renderer.xr.setSession( session );
-				button.textContent = isAR ? 'EXIT AR' : 'EXIT VR';
+				button.textContent = 'EXIT VR';
 
 				currentSession = session;
 
@@ -51,7 +48,7 @@ class XRButton {
 
 				currentSession.removeEventListener( 'end', onSessionEnded );
 
-				button.textContent = isAR ? 'ENTER AR' : 'ENTER VR';
+				button.textContent = 'ENTER VR';
 
 				currentSession = null;
 
@@ -65,7 +62,7 @@ class XRButton {
 			button.style.left = '50%';
 			button.style.width = '';
 
-			button.textContent = isAR ? 'ENTER AR' : 'ENTER VR';
+			button.textContent = 'ENTER VR';
 
 			// Request useful optional features when available.
 			// 'local-floor' must be in requiredFeatures or optionalFeatures
@@ -80,17 +77,9 @@ class XRButton {
 				optionalFeatures: [
 					'layers',
 					'bounded-floor',
-					...( isAR ? [ 'dom-overlay' ] : [] ),
 					...( sessionInit.optionalFeatures || [] )
 				]
 			};
-
-			// dom-overlay only makes sense (and is only supported) for AR
-			// passthrough sessions — PCVR/VR-only headsets have no camera
-			// feed for it to overlay onto.
-			if ( isAR && sessionInit.domOverlay ) {
-				sessionOptions.domOverlay = sessionInit.domOverlay;
-			}
 
 			button.onmouseenter = function () {
 
@@ -139,7 +128,7 @@ class XRButton {
 
 			disableButton();
 
-			button.textContent = 'VR/AR NOT SUPPORTED';
+			button.textContent = 'VR NOT SUPPORTED';
 
 		}
 
@@ -149,7 +138,7 @@ class XRButton {
 
 			console.warn( 'Exception when trying to call xr.isSessionSupported', exception );
 
-			button.textContent = 'VR/AR NOT ALLOWED';
+			button.textContent = 'VR NOT ALLOWED';
 
 		}
 
@@ -183,22 +172,10 @@ class XRButton {
 
 			stylizeElement( button );
 
-			// Prefer AR passthrough (Quest standalone); fall back to plain VR
-			// for PCVR headsets via Link/Air Link/SteamVR that don't expose
-			// passthrough to the browser (Valve Index, Vive, WMR, and Quest
-			// itself on some OpenXR runtime versions).
-			navigator.xr.isSessionSupported( 'immersive-ar' ).then( function ( arSupported ) {
+			// immersive-vr only. immersive-ar is not queried or requested.
+			navigator.xr.isSessionSupported( 'immersive-vr' ).then( function ( vrSupported ) {
 
-				if ( arSupported ) {
-					showEnterXR( 'immersive-ar' );
-					return;
-				}
-
-				navigator.xr.isSessionSupported( 'immersive-vr' ).then( function ( vrSupported ) {
-
-					vrSupported ? showEnterXR( 'immersive-vr' ) : showWebXRNotFound();
-
-				} ).catch( showXRNotAllowed );
+				vrSupported ? showEnterXR( 'immersive-vr' ) : showWebXRNotFound();
 
 			} ).catch( showXRNotAllowed );
 

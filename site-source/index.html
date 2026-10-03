@@ -11,6 +11,7 @@
 			margin: 0;
 			background: transparent;
 			overflow: hidden;
+			overscroll-behavior: none;
 			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 			-webkit-text-size-adjust: 100%;
 			text-size-adjust: 100%;
@@ -19,22 +20,47 @@
 			width: 100%;
 			height: 100%;
 			background: none;
+			overflow: hidden;
+			touch-action: none;
+			overscroll-behavior: none;
+		}
+		/* One- and two-finger drags on the scene must not pan or overscroll the
+		   browser page (iOS moves the visual viewport even with overflow:hidden).
+		   touch-action is intersected with ancestors, so `none` stays on #app and
+		   the canvas only — a none on html/body would also block chat scrolling.
+		   Mouse/desktop input is unaffected. */
+		#app canvas {
+			display: block;
+			touch-action: none;
+			overscroll-behavior: none;
+		}
+		/* In-panel scrolling keeps the browser gesture. contain stops a flick at
+		   the end of the list from chaining into a page pan. */
+		#desktop-chat-messages,
+		#dchat-theme-chat-messages,
+		#dchat-files-list,
+		#dchat-scene-list,
+		#dchat-community-list,
+		#dchat-themes-list,
+		#files-picker-list {
+			touch-action: pan-y;
+			overscroll-behavior: contain;
+			-webkit-overflow-scrolling: touch;
+		}
+		/* #dchat-env holds the brightness range slider. pan-y on an ancestor
+		   intersects away pan-x and would freeze that slider, so only contain
+		   overscroll here. */
+		#dchat-env {
+			overscroll-behavior: contain;
+			-webkit-overflow-scrolling: touch;
+		}
+		/* Typing, carets, sliders, and pickers stay native. */
+		input, textarea, select, [contenteditable="true"] {
+			touch-action: auto;
+			overscroll-behavior: contain;
 		}
 
-		/* Camera feed for AR-camera mode - behind #app; only visible once the
-		   WebGL canvas above it starts clearing to a transparent background. */
-		#ar-camera-feed {
-			display: none;
-			position: fixed;
-			inset: 0;
-			width: 100%;
-			height: 100%;
-			object-fit: cover;
-			z-index: -1;
-		}
-		#ar-camera-feed.active { display: block; }
-
-		/* Cardboard / WebXR / Walk-in-AR entry buttons.
+		/* Cardboard / WebXR VR entry buttons.
 		   High-contrast chips + mobile-friendly touch targets and safe-areas. */
 		.mobile-xr-btn,
 		#XRButton,
@@ -61,7 +87,7 @@
 			/* Keep clear of home-indicator / browser chrome so the full chip shows */
 			bottom: max(20px, calc(env(safe-area-inset-bottom, 0px) + 12px));
 		}
-		/* Short labels: Cardboard / Walk in AR */
+		/* Short label: Cardboard */
 		.mobile-xr-btn {
 			overflow: hidden;
 			text-overflow: ellipsis;
@@ -78,10 +104,7 @@
 		#cardboard-btn {
 			left: max(12px, env(safe-area-inset-left, 0px));
 		}
-		#ar-camera-btn {
-			right: max(12px, env(safe-area-inset-right, 0px));
-		}
-		/* WebXR button is centered. Long status labels ("VR/AR NOT SUPPORTED")
+		/* WebXR button is centered. Long status labels ("VR NOT SUPPORTED")
 		   must wrap and stay fully on-screen — no clip/ellipsis. */
 		#XRButton,
 		a#XRButton {
@@ -137,7 +160,10 @@
 			}
 		}
 
-		/* In-session controls, shown only while a mobile pseudo-XR mode is active */
+		/* In-session close X (Cardboard exit, and the same control if shown
+		   elsewhere). Must stay above the WebGL canvas, the chat window,
+		   status, and modals — those sit at z-index 1000–3000 and otherwise
+		   cover this corner. */
 		#mobile-xr-exit {
 			position: fixed;
 			top: max(12px, env(safe-area-inset-top, 0px));
@@ -152,7 +178,8 @@
 			font-weight: 700;
 			line-height: 1;
 			cursor: pointer;
-			z-index: 1000;
+			z-index: 2147483647;
+			pointer-events: auto;
 			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
 			-webkit-tap-highlight-color: transparent;
 		}
@@ -178,53 +205,6 @@
 			box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
 		}
 		#mobile-xr-walk:active { background: #3730a3; }
-
-		/* Walk-in-AR transform gizmo toolbar — bottom of screen above Hold to Walk */
-		#mobile-xr-gizmo-bar {
-			position: fixed;
-			bottom: max(80px, calc(env(safe-area-inset-bottom, 0px) + 72px));
-			left: 50%;
-			top: auto;
-			right: auto;
-			transform: translateX(-50%);
-			z-index: 1000;
-			display: none;
-			flex-direction: column;
-			gap: 8px;
-			align-items: center;
-			max-width: min(96vw, 420px);
-			width: max-content;
-		}
-		#mobile-xr-gizmo-bar.visible { display: flex; }
-		#mobile-xr-gizmo-bar button {
-			border: 2px solid #12121a;
-			border-radius: 12px;
-			background: #f4f4f8;
-			color: #12121a;
-			font: 700 13px/1.2 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-			padding: 10px 12px;
-			cursor: pointer;
-			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-			-webkit-tap-highlight-color: transparent;
-			touch-action: manipulation;
-		}
-		#mobile-xr-gizmo-bar button.active {
-			background: #4f46e5;
-			color: #fff;
-			border-color: #312e81;
-		}
-		#mobile-xr-gizmo-modes {
-			display: none;
-			flex-wrap: wrap;
-			gap: 6px;
-			justify-content: center;
-		}
-		#mobile-xr-gizmo-modes.visible { display: flex; }
-		#mobile-xr-gizmo-modes button {
-			padding: 8px 10px;
-			font-size: 12px;
-			min-width: 56px;
-		}
 
 
 		/* DOM Overlay for AR/VR chat interface (slim bar shown only in an XR session) */
@@ -1638,11 +1618,9 @@
 		body.display-only #status,
 		body.display-only #ui-toggle,
 		body.display-only #cardboard-btn,
-		body.display-only #ar-camera-btn,
 		body.display-only #XRButton,
 		body.display-only #mobile-xr-exit,
-		body.display-only #mobile-xr-walk,
-		body.display-only #mobile-xr-gizmo-bar {
+		body.display-only #mobile-xr-walk {
 			display: none !important;
 		}
 		body.display-only #editor-link { display: none !important; }
@@ -1654,34 +1632,19 @@
 	</style>
 </head>
 <body>
-	<!-- Live camera feed for AR-camera mode (iPhone/Android without WebXR AR).
-	     Sits behind #app; the WebGL canvas is rendered with a transparent
-	     clear color while this mode is active so the 3D scene composites
-	     over the live video, like a manual/software AR passthrough. -->
-	<video id="ar-camera-feed" playsinline muted autoplay></video>
-
 	<div id="app"></div>
 
-	<!-- Entry points for phones without OpenXR: Cardboard (stereo + gyro) and
-	     AR-camera (camera passthrough + gyro), shown/hidden based on feature
-	     detection - see refreshMobileXRButtons() in main.js. -->
+	<!-- Cardboard (stereo + gyro) for phones without immersive-vr.
+	     Shown/hidden by refreshMobileXRButtons() in main.js. -->
 	<button id="cardboard-btn" class="mobile-xr-btn" hidden>Cardboard VR</button>
-	<button id="ar-camera-btn" class="mobile-xr-btn" hidden>Walk in AR</button>
 
-	<!-- In-session controls for both mobile modes above (hidden otherwise) -->
-	<button id="mobile-xr-exit" hidden>&times;</button>
+	<!-- Close X + hold-to-walk, shown only while Cardboard is active.
+	     The X is re-appended to the end of <body> when shown so it stays
+	     above the chat window and any later UI. -->
+	<button id="mobile-xr-exit" type="button" aria-label="Exit" hidden>&times;</button>
 	<button id="mobile-xr-walk" hidden>Hold to Walk</button>
-	<div id="mobile-xr-gizmo-bar" aria-label="AR transform gizmo">
-		<button type="button" id="mobile-xr-gizmo-toggle">Show Gizmo</button>
-		<div id="mobile-xr-gizmo-modes">
-			<button type="button" id="mobile-xr-gizmo-all" class="active" data-mode="all">All</button>
-			<button type="button" id="mobile-xr-gizmo-translate" data-mode="translate">Move</button>
-			<button type="button" id="mobile-xr-gizmo-rotate" data-mode="rotate">Rotate</button>
-			<button type="button" id="mobile-xr-gizmo-scale" data-mode="scale">Scale</button>
-		</div>
-	</div>
 
-	<!-- DOM Overlay elements for AR -->
+	<!-- DOM Overlay elements for VR -->
 	<div id="overlay-root">
 		<div id="status">Ready</div>
 		<button id="ui-toggle">Hide UI</button>

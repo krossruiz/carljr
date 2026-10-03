@@ -39,12 +39,115 @@ scene.background = null; // transparent for passthrough
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 100);
 camera.position.set(0, 1.6, 0);
 
+// ============================================================================
+// In-world menu render priority (Three.js layer 1)
+// ============================================================================
+// The XR panels, head-locked HUD, and aim reticles must draw above every mesh
+// the user or injected code adds. Those meshes stay on layer 0 (the default).
+// The menu is taken off layer 0 and placed on layer 1.
+//
+// Layer 1 is not a depth override: WebXR renders the scene layer and the eye
+// layer in one pass, so a closer mesh would still win the depth test. Menu
+// materials therefore also get depthTest/depthWrite off, transparent:true (so
+// they sort in the late transparent pass), and a high renderOrder.
+//
+// Three r180 reserves layer 1 for the LEFT eye and layer 2 for the RIGHT eye
+// (WebXRManager masks the right eye to layers 0 and 2; StereoCamera does the
+// same for cardboard). The menu is also enabled on layer 2 so it does not
+// vanish in the right eye. Scene objects are never put on layer 1 or 2.
+const MENU_LAYER = 1;
+const MENU_RIGHT_EYE_LAYER = 2;
+const MENU_RENDER_ORDER = 10000;
+const MENU_RETICLE_RENDER_ORDER = 10001;
+const menuPriorityRoots = [];
+
+function registerMenuRoot(object, renderOrder = MENU_RENDER_ORDER) {
+	if (!object || menuPriorityRoots.indexOf(object) !== -1) return;
+	object.userData.menuRenderOrder = renderOrder;
+	menuPriorityRoots.push(object);
+}
+
+function applyMenuLayerPriority() {
+	// Desktop camera only tests layer 0 unless layer 1 is enabled. Enabling it
+	// does not disable layer 0, so windowed mode still draws the scene. XR eye
+	// cameras force layers 1 and 2 themselves; cardboard stereo cameras are
+	// re-enabled here in case something clears their masks.
+	camera.layers.enable(MENU_LAYER);
+	stereoCam.cameraL.layers.enable(MENU_LAYER);
+	stereoCam.cameraR.layers.enable(MENU_RIGHT_EYE_LAYER);
+
+	// Raycasters default to layer 0. Menu meshes are not on layer 0, so the
+	// UI rays must test layer 1 or panel hits/reticles stop registering.
+	raycaster.layers.enable(MENU_LAYER);
+	_hitRaycaster.layers.enable(MENU_LAYER);
+
+	for (let i = 0; i < menuPriorityRoots.length; i++) {
+		const root = menuPriorityRoots[i];
+		if (!root) continue;
+		const rootOrder = root.userData.menuRenderOrder || MENU_RENDER_ORDER;
+		root.traverse((obj) => {
+			// set() drops every other layer, including 0. Layer 2 keeps the
+			// right eye. Children parented under a menu root later (injected
+			// code, hud.add, panel.add, ...) are picked up by this traverse.
+			obj.layers.set(MENU_LAYER);
+			obj.layers.enable(MENU_RIGHT_EYE_LAYER);
+			const order = obj.userData.menuRenderOrder || rootOrder;
+			if (obj.renderOrder < order) obj.renderOrder = order;
+			const mats = obj.material;
+			if (!mats) return;
+			const list = Array.isArray(mats) ? mats : [mats];
+			for (let m = 0; m < list.length; m++) {
+				const mat = list[m];
+				if (!mat) continue;
+				// transparent:true puts the menu in the transparent pass so it
+				// paints after opaque AND after ordinary transparent scene meshes.
+				mat.transparent = true;
+				mat.depthTest = false;
+				mat.depthWrite = false;
+			}
+		});
+	}
+}
+
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 appElement.appendChild(renderer.domElement);
 renderer.setClearColor(0x000000, 0.0);
+renderer.domElement.style.touchAction = 'none';
+
+// Touch drags (one finger and two) were panning/overscrolling the browser
+// page instead of orbiting the scene. touch-action:none on #app/canvas
+// (index.html) opts the browser out; preventDefault on touchmove covers
+// Safari, which still moves the visual viewport. Skip editable fields and
+// any element that can actually scroll (chat lists, code editor) so typing
+// and in-panel scrolling keep working. Buttons still receive taps — this
+// does not call preventDefault on touchstart/click. Desktop mouse is untouched.
+function touchTargetAllowsBrowserScroll(target) {
+	if (!(target instanceof Element)) return false;
+	if (target.closest('input, textarea, select, [contenteditable="true"]')) return true;
+	let el = target;
+	while (el && el !== document.body && el !== document.documentElement) {
+		const style = window.getComputedStyle(el);
+		const oy = style.overflowY;
+		const ox = style.overflowX;
+		const scrollsY = (oy === 'auto' || oy === 'scroll' || oy === 'overlay') && el.scrollHeight > el.clientHeight + 1;
+		const scrollsX = (ox === 'auto' || ox === 'scroll' || ox === 'overlay') && el.scrollWidth > el.clientWidth + 1;
+		if (scrollsY || scrollsX) return true;
+		el = el.parentElement;
+	}
+	return false;
+}
+function preventPagePanFromTouch(e) {
+	if (touchTargetAllowsBrowserScroll(e.target)) return;
+	if (e.cancelable) e.preventDefault();
+}
+document.addEventListener('touchmove', preventPagePanFromTouch, { passive: false, capture: true });
+// iOS two-finger drag/pinch moves the page frame via gesture events, which
+// touchmove preventDefault does not cover.
+document.addEventListener('gesturestart', preventPagePanFromTouch, { passive: false });
+document.addEventListener('gesturechange', preventPagePanFromTouch, { passive: false });
 
 // Desktop (non-XR) camera controls: orbit/pan/zoom with the mouse. Disabled
 // automatically while an XR session is presenting (the headset pose drives
@@ -169,11 +272,10 @@ const dchatCodeHint = document.getElementById('dchat-code-hint');
 // written once too.
 // ============================================================================
 const ENV_MODE_BUTTONS = [
-	{ id: 'ar', label: 'AR (passthrough)', action: 'env:ar' },
 	{ id: 'vr', label: 'VR (color)', action: 'env:vr' }
 ];
 const EXIT_XR_BUTTON = [
-	{ id: 'exitXr', label: 'Exit AR/VR', action: 'env:exit', variant: 'warning' }
+	{ id: 'exitXr', label: 'Exit VR', action: 'env:exit', variant: 'warning' }
 ];
 // Mirrors desktop Environment → Navigation (WASD / First Person). XR grip still cycles Off.
 const NAV_MODE_BUTTONS = [
@@ -239,12 +341,6 @@ const CHAT_SUB_TABS = [
 // same behavior, so the behavior itself is written exactly once.
 function handleMenuAction(action) {
 	switch (action) {
-		case 'env:ar':
-			isVRMode = false;
-			applyEnvironmentMode();
-			renderSidePanel();
-			renderDomEnv();
-			break;
 		case 'env:vr':
 			isVRMode = true;
 			applyEnvironmentMode();
@@ -586,7 +682,7 @@ let sidePanel = null;
 let sideTexture = null;
 let sideCanvas = null;
 let sideContext = null;
-let isVRMode = false;
+let isVRMode = true;
 let vrBgHue = 220;       // 0-360
 let vrBgSat = 0.15;      // 0-1
 let vrBgLight = 0.12;    // 0-1
@@ -695,9 +791,8 @@ const _arFwd = new THREE.Vector3();
 const _arCamPos = new THREE.Vector3();
 
 // ============================================================================
-// XR Button Setup — AR passthrough on Quest standalone, plain VR fallback
-// for PCVR headsets over Link/Air Link/SteamVR (Quest 3 via Link, Index,
-// Vive, WMR, ...) that don't expose passthrough to the browser.
+// XR Button Setup — immersive-vr only (Cardboard is separate, below).
+// immersive-ar is not requested.
 // ============================================================================
 document.body.appendChild(
 	XRButton.createButton(renderer, {
@@ -707,22 +802,18 @@ document.body.appendChild(
 );
 
 // ============================================================================
-// Mobile pseudo-XR: Google Cardboard (stereo + gyro) and AR-camera
-// passthrough (camera feed + gyro), for phones that can't do real OpenXR -
-// iPhone Safari has no WebXR at all, and plenty of Android browsers/devices
-// don't support immersive-vr/ar either. Neither mode gets real 6DOF
-// position tracking (no SLAM). Gyro matches look to the phone; Walk-in-AR
-// pins scene content to a ground-plane anchor you can finger-drag. Hold-to-walk
-// can still nudge the camera; touch never orbits/rotates the view.
+// Mobile pseudo-XR: Google Cardboard (stereo + gyro) for phones that can't
+// do immersive-vr (iPhone Safari has no WebXR; some Android browsers don't
+// either). No 6DOF. Gyro matches look to the phone. Hold-to-walk nudges the
+// camera; touch never orbits/rotates the view. AR / Walk-in-AR is not offered.
 // ============================================================================
-let mobileXRMode = null; // null | 'cardboard' | 'ar'
+let mobileXRMode = null; // null | 'cardboard'
 let mobileMoveHeld = false;
 let arVideoStream = null;
 const stereoCam = new THREE.StereoCamera();
 stereoCam.eyeSep = 0.064; // average human interpupillary distance, metres
 
 const cardboardBtn = document.getElementById('cardboard-btn');
-const arCameraBtn = document.getElementById('ar-camera-btn');
 const mobileXRExitBtn = document.getElementById('mobile-xr-exit');
 const mobileXRWalkBtn = document.getElementById('mobile-xr-walk');
 const mobileXrGizmoBar = document.getElementById('mobile-xr-gizmo-bar');
@@ -736,21 +827,26 @@ const arVideoEl = document.getElementById('ar-camera-feed');
 
 const isMobileUA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-// Shows Cardboard when no OpenXR VR/AR session type is available at all, and
-// AR-camera whenever real WebXR AR isn't (which is always, on iOS).
+// Cardboard only when immersive-vr isn't available. immersive-ar is not checked.
 async function refreshMobileXRButtons() {
+	if (!cardboardBtn) return;
 	if (!isMobileUA || mobileXRMode) {
 		cardboardBtn.hidden = true;
-		arCameraBtn.hidden = true;
 		return;
 	}
-	let arOk = false, vrOk = false;
+	let vrOk = false;
 	if ('xr' in navigator) {
-		try { arOk = await navigator.xr.isSessionSupported('immersive-ar'); } catch { /* unsupported */ }
 		try { vrOk = await navigator.xr.isSessionSupported('immersive-vr'); } catch { /* unsupported */ }
 	}
-	cardboardBtn.hidden = arOk || vrOk;
-	arCameraBtn.hidden = arOk;
+	cardboardBtn.hidden = vrOk;
+}
+
+// Keep the Cardboard close X above the canvas, chat window, and modals.
+function raiseMobileXRExitButton() {
+	if (!mobileXRExitBtn) return;
+	mobileXRExitBtn.style.zIndex = '2147483647';
+	mobileXRExitBtn.style.pointerEvents = 'auto';
+	document.body.appendChild(mobileXRExitBtn);
 }
 refreshMobileXRButtons();
 
@@ -951,7 +1047,7 @@ function setArPlacementActive(active) {
 		orbitControls.enableRotate = true;
 		orbitControls.enablePan = true;
 		orbitControls.enableZoom = true;
-		renderer.domElement.style.touchAction = '';
+		renderer.domElement.style.touchAction = 'none';
 	}
 }
 
@@ -994,51 +1090,33 @@ renderer.domElement.addEventListener('pointercancel', onArPointerUp);
 renderer.domElement.addEventListener('pointerleave', onArPointerUp);
 
 async function enterMobileXRMode(mode) {
+	// AR / Walk-in-AR entry removed. Cardboard only.
+	if (mode !== 'cardboard') return;
+
 	const granted = await requestDeviceOrientationPermission();
 	if (!granted) {
 		updateStatus('Motion access denied - needed to look around', 'error');
 		return;
 	}
 
-	if (mode === 'ar') {
-		try {
-			arVideoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
-		} catch (err) {
-			updateStatus(`Camera access error: ${err.message}`, 'error');
-			return;
-		}
-		arVideoEl.srcObject = arVideoStream;
-		await arVideoEl.play().catch(() => {});
-		arVideoEl.classList.add('active');
-		// Renderer clear alpha is already 0 globally (see setClearColor at the
-		// top of this file) so the transparent canvas shows the video behind
-		// it - same trick used for real WebXR AR passthrough.
-		isVRMode = false;
-	} else {
-		isVRMode = true;
-	}
+	isVRMode = true;
 
 	window.addEventListener('deviceorientation', onDeviceOrientation);
 	window.addEventListener('orientationchange', onScreenOrientationChange);
 	onScreenOrientationChange();
 
 	try { await document.documentElement.requestFullscreen(); } catch { /* best-effort */ }
-	if (mode === 'cardboard' && screen.orientation && screen.orientation.lock) {
+	if (screen.orientation && screen.orientation.lock) {
 		try { await screen.orientation.lock('landscape'); } catch { /* not all browsers allow this */ }
 	}
 
 	orbitControls.enabled = false;
-	mobileXRMode = mode;
-	cardboardBtn.hidden = true;
-	arCameraBtn.hidden = true;
+	mobileXRMode = 'cardboard';
+	if (cardboardBtn) cardboardBtn.hidden = true;
 	mobileXRExitBtn.hidden = false;
+	raiseMobileXRExitButton();
 	mobileXRWalkBtn.hidden = false;
-	if (mode === 'ar') {
-		setArPlacementActive(true);
-		updateStatus('Walk in AR — use gizmo or hide it to free-drag · walk to look', 'connected');
-	} else {
-		updateStatus('Cardboard VR active', 'connected');
-	}
+	updateStatus('Cardboard VR active', 'connected');
 	applyEnvironmentMode();
 	applyLayDownView();
 	renderDomEnv();
@@ -1054,8 +1132,10 @@ function exitMobileXRMode() {
 		for (const track of arVideoStream.getTracks()) track.stop();
 		arVideoStream = null;
 	}
-	arVideoEl.classList.remove('active');
-	arVideoEl.srcObject = null;
+	if (arVideoEl) {
+		arVideoEl.classList.remove('active');
+		arVideoEl.srcObject = null;
+	}
 
 	if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 	if (screen.orientation && screen.orientation.unlock) {
@@ -1069,7 +1149,7 @@ function exitMobileXRMode() {
 	orbitControls.enabled = true;
 	mobileXRExitBtn.hidden = true;
 	mobileXRWalkBtn.hidden = true;
-	isVRMode = false;
+	isVRMode = true;
 	applyEnvironmentMode();
 	applyLayDownView(); // clear pitch for desktop
 	renderDomEnv();
@@ -1078,8 +1158,8 @@ function exitMobileXRMode() {
 }
 
 cardboardBtn.addEventListener('click', () => enterMobileXRMode('cardboard'));
-arCameraBtn.addEventListener('click', () => enterMobileXRMode('ar'));
 mobileXRExitBtn.addEventListener('click', exitMobileXRMode);
+raiseMobileXRExitButton();
 
 // touchstart/touchend (mobile) and mousedown/mouseup (desktop testing) both
 // wired so this works whether it's a real touchscreen or a mouse.
@@ -2044,7 +2124,7 @@ function updateMicButtonDOM() {
 }
 
 // ============================================================================
-// Side Panel (AR/VR Toggle + Color Wheel)
+// Side Panel (VR environment + Color Wheel)
 // ============================================================================
 function createSidePanel() {
 	sideCanvas = document.createElement('canvas');
@@ -2082,7 +2162,7 @@ function hslToHex(h, s, l) {
 	return '#' + c.getHexString();
 }
 
-// Mirrors the AR/VR + color/brightness controls (canvas side panel, VR-only)
+// Mirrors the VR + color/brightness controls (canvas side panel, VR-only)
 // into the desktop Environment tab. Safe to call before the desktop DOM
 // exists (e.g. not yet — guarded by null checks below).
 function renderDomEnv() {
@@ -2102,7 +2182,7 @@ function renderDomEnv() {
 		note.style.display = colorEnabled ? 'none' : '';
 		note.textContent = colorEnabled
 			? ''
-			: 'Background color is unavailable while AR/VR mode is active.';
+			: 'Background color is unavailable while a VR session is active.';
 	}
 	const hex = hslToHex(vrBgHue, vrBgSat, vrBgLight);
 	if (dchatColorPicker) dchatColorPicker.value = hex;
@@ -2141,7 +2221,7 @@ function renderSidePanel() {
 	ctx.textAlign = 'center';
 	ctx.fillText('Environment', w / 2, 28);
 
-	// --- AR/VR Toggle (shared spec - see ENV_MODE_BUTTONS/handleMenuAction) ---
+	// --- VR mode (shared spec - see ENV_MODE_BUTTONS/handleMenuAction) ---
 	const envButtons = ENV_MODE_BUTTONS.map(b => ({
 		...b,
 		variant: (b.id === 'ar' && !isVRMode) || (b.id === 'vr' && isVRMode) ? 'active' : 'inactiveToggle'
@@ -2150,7 +2230,7 @@ function renderSidePanel() {
 	sidePanelEnvButtonBoxes = envLayout.boxes;
 	drawButtonsToCanvas(ctx, sidePanelEnvButtonBoxes, { fontSize: 14 });
 
-	// Exit AR/VR + Lay down / Sit up (XR-only; desktop has no immersive session)
+	// Exit VR + Lay down / Sit up (XR-only; desktop has no immersive session)
 	const exitY = 48 + envLayout.totalHeight + 6;
 	const exitLayButtons = [...EXIT_XR_BUTTON, getLayDownButton()];
 	const exitLayout = buildButtonLayout(exitLayButtons, { width: w - 32, x: 16, y: exitY, height: 34, perRow: 2, gap: 4 });
@@ -2298,14 +2378,6 @@ function applyEnvironmentMode() {
 	const inMobileXR = typeof mobileXRMode !== 'undefined' && !!mobileXRMode;
 	const inWebXR = !!(renderer && renderer.xr && renderer.xr.isPresenting);
 
-	// Live AR passthrough (mobile AR camera or WebXR AR): keep transparent.
-	if (mobileXRMode === 'ar' || (inWebXR && !isVRMode)) {
-		if (vrSkybox) vrSkybox.visible = false;
-		scene.background = null;
-		renderer.setClearColor(0x000000, 0.0);
-		return;
-	}
-
 	// Desktop / mobile browser (not in an XR session): solid scene background
 	// so Environment tab color changes are visible immediately.
 	if (!inWebXR && !inMobileXR) {
@@ -2328,7 +2400,7 @@ function handleSidePanelHit(uv) {
 	const canvasX = uv.x * 256;
 	const canvasY = (1 - uv.y) * 768; // UV y is flipped vs canvas y
 
-	// AR/VR Toggle (shared spec - see ENV_MODE_BUTTONS/handleMenuAction)
+	// VR mode (shared spec - see ENV_MODE_BUTTONS/handleMenuAction)
 	const envHit = hitTestButtons(sidePanelEnvButtonBoxes, canvasX, canvasY);
 	if (envHit) {
 		handleMenuAction(envHit.action);
@@ -4515,7 +4587,11 @@ function createReticle() {
 	});
 	const ring = new THREE.Mesh(geometry, material);
 	ring.visible = false;
+	ring.renderOrder = MENU_RETICLE_RENDER_ORDER;
 	scene.add(ring);
+	// Cursor must paint after the panels (same layer, higher renderOrder) or
+	// the depthTest:false panels would cover it.
+	registerMenuRoot(ring, MENU_RETICLE_RENDER_ORDER);
 	return ring;
 }
 
@@ -6230,7 +6306,7 @@ if (dchatThemeChatInput) {
 	});
 }
 
-// Environment tab: AR/VR toggle (shared button spec, see ENV_MODE_BUTTONS/
+// Environment tab: VR mode (shared button spec, see ENV_MODE_BUTTONS/
 // handleMenuAction), color picker, brightness slider. The toggle buttons
 // themselves are (re)mounted by renderDomEnv() since their active/inactive
 // styling depends on isVRMode.
@@ -6269,7 +6345,7 @@ if (dchatThemesButtonsMount) {
 }
 
 // Switches between the desktop chat window (windowed browser) and the slim
-// dom-overlay bar (AR/VR immersive session), and shows/hides the legacy 3D
+// dom-overlay bar (VR immersive session), and shows/hides the legacy 3D
 // canvas panels accordingly — the desktop window replaces them entirely.
 function setImmersiveUiMode(immersive) {
 	const panels = [chatPanel, inputPanel, sidePanel, scenePanel];
@@ -6302,7 +6378,7 @@ function onWindowResize() {
 window.addEventListener('resize', onWindowResize);
 
 // ============================================================================
-// AR Session Handlers
+// VR Session Handlers
 // ============================================================================
 function positionAllPanels(chatY) {
 	const inputY = chatY - CHAT_PANEL_HEIGHT / 2 - INPUT_PANEL_GAP - INPUT_PANEL_HEIGHT / 2;
@@ -6323,24 +6399,16 @@ renderer.xr.addEventListener('sessionstart', () => {
 	setImmersiveUiMode(true);
 	applyLayDownView();
 
-	// PCVR headsets (Quest via Link/Air Link, Index, Vive, WMR, ...) report
-	// an 'opaque' blend mode — there's no camera passthrough to show, so
-	// switch on the VR skybox instead of leaving a black void. Passthrough
-	// AR sessions report 'additive' or 'alpha-blend' and keep the transparent
-	// background as before.
-	const session = renderer.xr.getSession();
-	if (session && session.environmentBlendMode === 'opaque') {
-		isVRMode = true;
-		applyEnvironmentMode();
-		renderSidePanel();
-	}
+	// Always VR color/skybox. immersive-ar is not started.
+	isVRMode = true;
+	applyEnvironmentMode();
+	renderSidePanel();
 	renderDomEnv();
 });
 
 renderer.xr.addEventListener('sessionend', () => {
 	positionAllPanels(1.4);
-	// Reset to AR mode when leaving XR
-	isVRMode = false;
+	isVRMode = true;
 	applyEnvironmentMode();
 	applyLayDownView(); // clear pitch so desktop orbit stays upright
 	renderSidePanel();
@@ -6359,7 +6427,7 @@ createScenePanel();
 createHudStatus();
 createUiToggle();
 // Start in windowed (non-XR) mode: the desktop chat window is the UI, and the
-// legacy 3D canvas panels stay hidden until an AR/VR session starts.
+// legacy 3D canvas panels stay hidden until a VR session starts.
 setImmersiveUiMode(false);
 applyEnvironmentMode();
 
@@ -6393,6 +6461,17 @@ const _rayOrigin = new THREE.Vector3();
 const _rayDir = new THREE.Vector3();
 const _hitRaycaster = new THREE.Raycaster();
 const _hitTargets = []; // populated after panels exist
+
+// World-anchored XR panels plus the head-locked hud (status + Hide/Show UI).
+// Reticles register themselves in createReticle. Anything added under these
+// roots later is pulled onto layer 1 by applyMenuLayerPriority() each frame.
+registerMenuRoot(chatPanel);
+registerMenuRoot(inputPanel);
+registerMenuRoot(keyboardPanel);
+registerMenuRoot(sidePanel);
+registerMenuRoot(scenePanel);
+registerMenuRoot(hud);
+applyMenuLayerPriority();
 // Previous per-hand button-pressed state, for edge detection (ray toggle) and
 // hold detection (push-to-talk). Keyed by handedness → button index → bool.
 const _prevButtons = { left: {}, right: {} };
@@ -6570,6 +6649,10 @@ renderer.setAnimationLoop((time) => {
 			// Silently skip broken animation functions
 		}
 	}
+
+	// Re-apply after user animations so children parented to the menu this
+	// frame (and any material swapped onto a panel) still render on layer 1.
+	applyMenuLayerPriority();
 
 	if (mobileXRMode === 'cardboard') {
 		// Manual side-by-side stereo render (no OpenXR session to do this for us).
