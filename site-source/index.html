@@ -248,14 +248,14 @@
 		#desktop-chat {
 			/* Themeable chrome (editor window only — not the 3D scene).
 			   Themes set these vars / optional #dchat-theme-style custom CSS. */
-			--dchat-bg: rgba(22, 22, 32, 0.05);
+			--dchat-bg: rgba(22, 22, 32, 0.85);
 			--dchat-border: #ffffff;
 			--dchat-text: #ffffff;
 			--dchat-text-muted: rgba(255, 255, 255, 0.55);
-			--dchat-header-bg: rgba(22, 22, 32, 0.05);
-			--dchat-tabs-bg: rgba(255, 255, 255, 0.03);
+			--dchat-header-bg: rgba(22, 22, 32, 0.85);
+			--dchat-tabs-bg: rgba(22, 22, 32, 0.85);
 			--dchat-tab-color: rgba(255, 255, 255, 0.5);
-			--dchat-tab-active-bg: rgba(255, 255, 255, 0.09);
+			--dchat-tab-active-bg: #4f46e5;
 			--dchat-tab-active-color: #ffffff;
 			--dchat-input-bg: rgba(255, 255, 255, 0.1);
 			--dchat-accent: #8b5cf6;
@@ -357,7 +357,7 @@
 
 		.dchat-tab {
 			border: none;
-			background: transparent;
+			background: #3a3c4e;
 			color: var(--dchat-tab-color);
 			font-size: 12px;
 			font-weight: 600;
@@ -375,7 +375,7 @@
 			transition: background 0.15s, color 0.15s;
 		}
 
-		.dchat-tab:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+		.dchat-tab:hover { background: #4e5168; color: #fff; }
 
 		.dchat-tab.active {
 			background: var(--dchat-tab-active-bg);
@@ -527,7 +527,7 @@
 			height: 24px;
 			border: none;
 			border-radius: 7px;
-			background: rgba(255, 255, 255, 0.12);
+			background: #3a3c4e;
 			color: #fff;
 			font-size: 13px;
 			line-height: 1;
@@ -539,7 +539,7 @@
 		}
 
 		#desktop-chat-header-buttons button:hover {
-			background: rgba(255, 255, 255, 0.25);
+			background: #4e5168;
 		}
 
 		#desktop-chat-messages {
@@ -647,17 +647,18 @@
 		.dchat-btn {
 			border: none;
 			border-radius: 10px;
+			background: #3a3c4e;
 			color: #fff;
 			font-weight: 600;
 			font-size: 13px;
 			padding: 10px;
 			cursor: pointer;
-			transition: transform 0.1s, opacity 0.2s;
+			transition: transform 0.1s, opacity 0.2s, background 0.15s;
 		}
 
-		.dchat-btn:hover { transform: scale(1.02); }
+		.dchat-btn:hover { transform: scale(1.02); background: #4e5168; }
 		.dchat-btn:active { transform: scale(0.98); }
-		.dchat-btn.secondary { background: rgba(255, 255, 255, 0.1); }
+		.dchat-btn.secondary { background: #3a3c4e; }
 		.dchat-btn.accent { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
 
 		/* --- Scenes tab (export / load / manage saved scenes) --- */
@@ -713,12 +714,12 @@
 		#desktop-files-picker-button,
 		#theme-files-picker-button {
 			width: 36px; height: 36px; border: none; border-radius: 10px;
-			background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 15px;
+			background: #3a3c4e; color: #fff; font-size: 15px;
 			cursor: pointer; flex-shrink: 0;
 			display: flex; align-items: center; justify-content: center;
 		}
 		#desktop-files-picker-button:hover,
-		#theme-files-picker-button:hover { background: rgba(255, 255, 255, 0.2); }
+		#theme-files-picker-button:hover { background: #4e5168; }
 		#dchat-theme-chat-row #theme-files-picker-button { width: 34px; height: 34px; }
 		#dchat-theme-attachments {
 			display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 4px;
@@ -779,6 +780,10 @@
 		   main.js. flex-shrink:0 keeps them from being squashed by the
 		   scrollable list below them. */
 		#dchat-scenes-buttons, #dchat-community-buttons { flex-shrink: 0; }
+		/* SVG menu chips (env/scene/theme toggles, community Clear/Layer, etc.)
+		   ship a translucent fill from VARIANT_COLORS. Inside this window only,
+		   those rgba fills become an opaque chip. Gradient fills stay solid. */
+		#desktop-chat .menu-btn rect[fill^="rgba"] { fill: #3a3c4e; }
 		#dchat-community-loadmode { flex-shrink: 0; margin-top: 8px; }
 		.dchat-community-loadhint {
 			margin: 6px 2px 0;
@@ -869,8 +874,8 @@
 
 		.dchat-scene-remove {
 			border: none;
-			background: rgba(239, 68, 68, 0.25);
-			color: #ef4444;
+			background: #dc2626;
+			color: #fff;
 			font-weight: 700;
 			width: 24px;
 			height: 24px;
@@ -879,7 +884,7 @@
 			flex-shrink: 0;
 		}
 
-		.dchat-scene-remove:hover { background: rgba(239, 68, 68, 0.4); }
+		.dchat-scene-remove:hover { background: #b91c1c; }
 
 		.dchat-single-btn-mount { flex-shrink: 0; display: none; }
 		.dchat-single-btn-mount.visible { display: block; }
@@ -919,11 +924,11 @@
 		}
 
 		#desktop-mic-button, #desktop-attach-button, #desktop-files-picker-button {
-			background: rgba(255, 255, 255, 0.12);
+			background: #3a3c4e;
 			padding: 10px 12px;
 		}
 
-		#desktop-attach-button:hover { background: rgba(255, 255, 255, 0.2); }
+		#desktop-attach-button:hover { background: #4e5168; }
 
 		/* Staged file/image attachments, shown above the input row until sent. */
 		#desktop-attachments {
@@ -953,8 +958,8 @@
 
 		.dchat-attachment-remove {
 			border: none;
-			background: rgba(239, 68, 68, 0.25);
-			color: #ef4444;
+			background: #dc2626;
+			color: #fff;
 			font-weight: 700;
 			width: 16px;
 			height: 16px;
@@ -965,7 +970,7 @@
 			font-size: 11px;
 			padding: 0;
 		}
-		.dchat-attachment-remove:hover { background: rgba(239, 68, 68, 0.4); }
+		.dchat-attachment-remove:hover { background: #b91c1c; }
 
 		#desktop-mic-button.listening {
 			background: #ef4444;
@@ -1389,16 +1394,16 @@
 		}
 		.dchat-subtab {
 			flex: 1;
-			border: 1px solid rgba(255,255,255,0.12);
-			background: rgba(255,255,255,0.06);
-			color: rgba(255,255,255,0.65);
+			border: 1px solid #6d7088;
+			background: #3a3c4e;
+			color: #ffffff;
 			font-size: 12px;
 			font-weight: 700;
 			padding: 7px 8px;
 			border-radius: 8px;
 			cursor: pointer;
 		}
-		.dchat-subtab:hover { color: #fff; background: rgba(255,255,255,0.1); }
+		.dchat-subtab:hover { color: #fff; background: #4e5168; }
 		.dchat-subtab.active {
 			background: linear-gradient(135deg, var(--dchat-accent-2, #6366f1), var(--dchat-accent, #8b5cf6));
 			color: #fff;
@@ -1490,6 +1495,24 @@
 			color: #fff;
 		}
 		#dchat-theme-chat-send:disabled { opacity: 0.5; cursor: default; }
+
+		.dchat-theme-remember {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			font-size: 12px;
+			color: rgba(255, 255, 255, 0.7);
+			cursor: pointer;
+			user-select: none;
+			flex-shrink: 0;
+		}
+		.dchat-theme-remember input[type="checkbox"] {
+			width: 16px;
+			height: 16px;
+			margin: 0;
+			accent-color: var(--dchat-accent-2, #6366f1);
+			cursor: pointer;
+		}
 
 		#editor-link {
 			display: none;
@@ -1793,8 +1816,12 @@
 			<div id="dchat-chat-section-theme" class="dchat-chat-section">
 				<div id="dchat-theme-chat">
 					<div class="dchat-section-label">Theme restyle chat</div>
+					<label class="dchat-theme-remember" title="Off by default. When checked, the last applied theme is saved and restored next visit.">
+						<input type="checkbox" id="dchat-theme-remember" />
+						Remember theme
+					</label>
 					<div id="dchat-theme-chat-messages">
-						<div class="dchat-theme-msg system">Ask for editor chrome restyles (colors, fonts, panels). The AI returns a theme JSON that applies live — then upload it from Community → Themes. Your last applied theme is restored next visit.</div>
+						<div class="dchat-theme-msg system">Ask for editor chrome restyles (colors, fonts, panels). The AI returns a theme JSON that applies live — then upload it from Community → Themes. Remember theme is off by default, so the editor starts from the default theme each visit.</div>
 					</div>
 					<div id="dchat-theme-attachments" hidden></div>
 					<div id="dchat-theme-chat-row">
@@ -1899,6 +1926,10 @@
 
 				<div id="dchat-community-section-themes" class="dchat-community-section">
 					<div id="dchat-themes-buttons"></div>
+					<label class="dchat-theme-remember" style="margin-top:8px" title="Off by default. When checked, the last applied theme is saved and restored next visit.">
+						<input type="checkbox" id="dchat-theme-remember-community" />
+						Remember theme
+					</label>
 					<div id="dchat-themes-list"></div>
 					<div style="font-size:12px;color:rgba(255,255,255,0.45);margin-top:10px;line-height:1.4">
 						Restyle the editor in Chat → Theme, then upload the current theme here to share it.

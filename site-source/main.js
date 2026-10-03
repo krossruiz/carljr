@@ -148,6 +148,8 @@ const dchatThemesList = document.getElementById('dchat-themes-list');
 const dchatThemeChatMessages = document.getElementById('dchat-theme-chat-messages');
 const dchatThemeChatInput = document.getElementById('dchat-theme-chat-input');
 const dchatThemeChatSend = document.getElementById('dchat-theme-chat-send');
+const dchatThemeRemember = document.getElementById('dchat-theme-remember');
+const dchatThemeRememberCommunity = document.getElementById('dchat-theme-remember-community');
 const dchatCodeEditor = document.getElementById('dchat-code-editor');
 const dchatCodeLive = document.getElementById('dchat-code-live');
 const dchatCodeApply = document.getElementById('dchat-code-apply');
@@ -327,6 +329,9 @@ function handleMenuAction(action) {
 			break;
 		case 'themes:reset':
 			applyTheme(DEFAULT_THEME, { announce: true });
+			break;
+		case 'theme:toggleRemember':
+			setRememberTheme(!rememberTheme);
 			break;
 		case 'panel:scenes':
 			scenePanelSubTab = 'scenes';
@@ -633,6 +638,7 @@ let scenePanelSubTabBoxes = [];
 let scenePanelNestedTabBoxes = []; // Community Scenes|Themes nested tabs
 let scenePanelListTop = 0; // set by renderScenePanel, reused by handleScenePanelHit
 let chatPanelSubTabBoxes = []; // Chat Scene|Theme subtabs on center panel
+let chatThemeRememberBoxes = []; // XR theme-chat "Remember theme" toggle
 let codeScrollOffset = 0; // line scroll for XR Code panel
 let filesScrollOffset = 0; // row scroll for XR Files panel
 let systemObjectIds = new Set();
@@ -1155,11 +1161,30 @@ function renderChatToCanvas() {
 	const headerHeight = 60;
 	const subTabY = headerHeight + 8;
 	const subTabH = 36;
-	const contentTop = subTabY + subTabH + 28; // first line Y (below Scene|Theme tabs)
+	const isTheme = chatSection === 'theme';
+	chatThemeRememberBoxes = [];
+	let themeRememberLayout = null;
+	if (isTheme) {
+		themeRememberLayout = buildButtonLayout([{
+			id: 'rememberTheme',
+			label: rememberTheme ? '\u2611 Remember theme' : '\u2610 Remember theme',
+			action: 'theme:toggleRemember',
+			variant: rememberTheme ? 'active' : 'inactiveToggle'
+		}], {
+			width: width - 48,
+			x: 24,
+			y: subTabY + subTabH + 10,
+			height: 36,
+			perRow: 1,
+			gap: 8
+		});
+		chatThemeRememberBoxes = themeRememberLayout.boxes;
+	}
+	const contentTop = isTheme
+		? (subTabY + subTabH + 10 + themeRememberLayout.totalHeight + 16)
+		: (subTabY + subTabH + 28); // first line Y (below Scene|Theme tabs)
 	const contentBottom = height - 20;
 	const visibleLineCount = Math.floor((contentBottom - contentTop) / lineHeight);
-
-	const isTheme = chatSection === 'theme';
 
 	// Build all lines for the active chat section
 	ctx.font = `${MESSAGE_FONT_SIZE}px -apple-system, BlinkMacSystemFont, sans-serif`;
@@ -1267,6 +1292,7 @@ function renderChatToCanvas() {
 	});
 	chatPanelSubTabBoxes = chatSubLayout.boxes;
 	drawButtonsToCanvas(ctx, chatPanelSubTabBoxes, { fontSize: 16 });
+	if (themeRememberLayout) drawButtonsToCanvas(ctx, chatThemeRememberBoxes, { fontSize: 16 });
 
 	if (chatScrollOffset < maxScroll) {
 		ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
@@ -3364,14 +3390,14 @@ async function renameCommunityScene() {
 const DEFAULT_THEME = {
 	name: 'Default',
 	cssVars: {
-		'--dchat-bg': 'rgba(22, 22, 32, 0.05)',
+		'--dchat-bg': 'rgba(22, 22, 32, 0.85)',
 		'--dchat-border': '#ffffff',
 		'--dchat-text': '#ffffff',
 		'--dchat-text-muted': 'rgba(255, 255, 255, 0.55)',
-		'--dchat-header-bg': 'rgba(22, 22, 32, 0.05)',
-		'--dchat-tabs-bg': 'rgba(255, 255, 255, 0.03)',
+		'--dchat-header-bg': 'rgba(22, 22, 32, 0.85)',
+		'--dchat-tabs-bg': 'rgba(22, 22, 32, 0.85)',
 		'--dchat-tab-color': 'rgba(255, 255, 255, 0.5)',
-		'--dchat-tab-active-bg': 'rgba(255, 255, 255, 0.09)',
+		'--dchat-tab-active-bg': '#4f46e5',
 		'--dchat-tab-active-color': '#ffffff',
 		'--dchat-input-bg': 'rgba(255, 255, 255, 0.1)',
 		'--dchat-accent': '#8b5cf6',
@@ -3418,10 +3444,43 @@ function applyTheme(theme, { announce = false } = {}) {
 }
 
 const THEME_CACHE_KEY = 'carljr-theme';
+// This preference always persists. Absent or anything other than '1' means off.
+const THEME_REMEMBER_KEY = 'carljr-theme-remember';
+
+function loadRememberTheme() {
+	try {
+		return localStorage.getItem(THEME_REMEMBER_KEY) === '1';
+	} catch { /* ignore */ }
+	return false;
+}
+
+let rememberTheme = loadRememberTheme();
+
+function syncRememberThemeCheckboxes() {
+	if (dchatThemeRemember) dchatThemeRemember.checked = rememberTheme;
+	if (dchatThemeRememberCommunity) dchatThemeRememberCommunity.checked = rememberTheme;
+}
+
+function setRememberTheme(on) {
+	rememberTheme = !!on;
+	try {
+		localStorage.setItem(THEME_REMEMBER_KEY, rememberTheme ? '1' : '0');
+	} catch { /* ignore quota */ }
+	syncRememberThemeCheckboxes();
+	cacheLastTheme(currentTheme || DEFAULT_THEME);
+	if (chatCanvas) renderChatToCanvas();
+	if (scenePanelSubTab === 'community' && communitySection === 'themes') renderScenePanel();
+}
 
 function cacheLastTheme(theme) {
-	if (!theme || !theme.cssVars) return;
 	try {
+		// Remember-theme is opt-in. While it is off, drop any previously saved theme
+		// so a later visit cannot restore it and live edits are not written.
+		if (!rememberTheme) {
+			localStorage.removeItem(THEME_CACHE_KEY);
+			return;
+		}
+		if (!theme || !theme.cssVars) return;
 		localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({
 			name: theme.name || 'Custom',
 			cssVars: { ...theme.cssVars },
@@ -4166,10 +4225,23 @@ function renderScenePanel() {
 			const btnLayout = buildButtonLayout(THEME_BUTTONS, {
 				width: w - 24, x: 12, y: contentTop, height: 40, perRow: 3, gap: 6
 			});
-			scenePanelButtonBoxes = btnLayout.boxes;
+			const rememberLayout = buildButtonLayout([{
+				id: 'rememberTheme',
+				label: rememberTheme ? '\u2611 Remember theme' : '\u2610 Remember theme',
+				action: 'theme:toggleRemember',
+				variant: rememberTheme ? 'active' : 'inactiveToggle'
+			}], {
+				width: w - 24,
+				x: 12,
+				y: contentTop + btnLayout.totalHeight + 6,
+				height: 34,
+				perRow: 1,
+				gap: 6
+			});
+			scenePanelButtonBoxes = btnLayout.boxes.concat(rememberLayout.boxes);
 			drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 11 });
 
-			const sepY = contentTop + btnLayout.totalHeight + 8;
+			const sepY = contentTop + btnLayout.totalHeight + 6 + rememberLayout.totalHeight + 8;
 			ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
 			ctx.fillRect(12, sepY, w - 24, 1);
 
@@ -4390,6 +4462,11 @@ function handleScenePanelHit(uv) {
 function handleChatPanelHit(uv) {
 	const canvasX = uv.x * 1024;
 	const canvasY = (1 - uv.y) * (chatCanvas?.height || 768);
+	const rememberHit = hitTestButtons(chatThemeRememberBoxes, canvasX, canvasY);
+	if (rememberHit) {
+		handleMenuAction(rememberHit.action);
+		return;
+	}
 	const subHit = hitTestButtons(chatPanelSubTabBoxes, canvasX, canvasY);
 	if (subHit) handleMenuAction(subHit.action);
 }
@@ -6139,6 +6216,13 @@ document.querySelectorAll('#dchat-chat-subtabs .dchat-subtab').forEach(btn => {
 	btn.addEventListener('click', () => setChatSection(btn.dataset.chatSection));
 });
 
+syncRememberThemeCheckboxes();
+if (dchatThemeRemember) {
+	dchatThemeRemember.addEventListener('change', () => setRememberTheme(dchatThemeRemember.checked));
+}
+if (dchatThemeRememberCommunity) {
+	dchatThemeRememberCommunity.addEventListener('change', () => setRememberTheme(dchatThemeRememberCommunity.checked));
+}
 if (dchatThemeChatSend) dchatThemeChatSend.addEventListener('click', sendThemeChat);
 if (dchatThemeChatInput) {
 	dchatThemeChatInput.addEventListener('keydown', (e) => {
@@ -6281,10 +6365,16 @@ applyEnvironmentMode();
 
 // Populate the community list (and auto-load /s/:id or /e/:id / ?scene= shares).
 // Runs after setImmersiveUiMode so display-only can hide the desktop chrome cleanly.
-// Restore last cached editor theme (chrome only) for future sessions.
-const cachedTheme = loadCachedTheme();
-if (cachedTheme) applyTheme(cachedTheme);
-else currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
+// Theme restore is opt-in (Remember theme). Default: start from DEFAULT_THEME
+// and do not keep a previously saved theme around.
+if (rememberTheme) {
+	const cachedTheme = loadCachedTheme();
+	if (cachedTheme) applyTheme(cachedTheme);
+	else currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
+} else {
+	currentTheme = { ...DEFAULT_THEME, cssVars: { ...DEFAULT_THEME.cssVars } };
+	try { localStorage.removeItem(THEME_CACHE_KEY); } catch { /* ignore */ }
+}
 
 loadContextLibrary();
 
