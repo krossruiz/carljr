@@ -26,6 +26,9 @@ const PORT = process.env.PORT || 3000;
 // chat UI) - this is just the fallback when a request doesn't specify one.
 const LLM_BACKEND = (process.env.LLM_BACKEND || 'openai').toLowerCase();
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-6-astra';
+// Documented OpenAI chat-completions id (developers.openai.com/api/docs/models/gpt-6.1-sol).
+// Not overridden by OPENAI_MODEL, which only replaces the Astra default above.
+const OPENAI_SOL_MODEL = 'gpt-6.1-sol';
 
 // API keys - each backend is only usable if its key is configured. This
 // intentionally does NOT exit at startup when a key is missing: unlike the
@@ -49,7 +52,8 @@ function getAvailableBackends() {
 	return {
 		claude: { label: 'Claude (Sonnet 5)', available: !!CLAUDE_API_KEY },
 		fable: { label: 'Claude (Fable 5.1)', available: !!CLAUDE_API_KEY },
-	openai: { label: 'GPT6 Astra', available: !!OPENAI_API_KEY },
+		openai: { label: 'GPT6 Astra', available: !!OPENAI_API_KEY },
+		'openai-sol': { label: 'GPT6.1 Sol', available: !!OPENAI_API_KEY },
 		ollama: { label: 'Ollama (runs in your browser, local)', available: true, local: true },
 	};
 }
@@ -280,10 +284,10 @@ function callClaudeAPI(systemPrompt, messages, maxTokens = 16384, model = 'claud
 
 // Shared function: call the OpenAI API and normalize the response into the
 // same { content: [{ text }] } shape the client expects from Claude.
-function callOpenAIAPI(systemPrompt, messages, maxTokens = 16384) {
+function callOpenAIAPI(systemPrompt, messages, maxTokens = 16384, model = OPENAI_MODEL) {
 	return new Promise((resolve, reject) => {
 		const postBody = JSON.stringify({
-			model: OPENAI_MODEL,
+			model,
 			max_completion_tokens: maxTokens,
 			messages: [
 				{ role: 'system', content: systemPrompt },
@@ -337,9 +341,10 @@ function callLLM(systemPrompt, messages, maxTokens = 16384, backend) {
 		return Promise.resolve({ error: true, status: 400, data: { error: { message: 'Ollama requests should go directly from the browser to localhost:11434, not through this server.' } } });
 	}
 
-	if (chosen === 'openai') {
+	if (chosen === 'openai' || chosen === 'openai-sol') {
 		if (!OPENAI_API_KEY) return Promise.resolve({ error: true, status: 400, data: { error: { message: 'OPENAI_API_KEY is not configured on the server.' } } });
-		return callOpenAIAPI(systemPrompt, messages, maxTokens);
+		const model = chosen === 'openai-sol' ? OPENAI_SOL_MODEL : OPENAI_MODEL;
+		return callOpenAIAPI(systemPrompt, messages, maxTokens, model);
 	}
 
 	if (!CLAUDE_API_KEY) return Promise.resolve({ error: true, status: 400, data: { error: { message: 'CLAUDE_API_KEY is not configured on the server.' } } });

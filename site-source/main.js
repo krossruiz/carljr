@@ -517,7 +517,7 @@ function toggleLayDownView() {
 let messages = [];       // Full messages for API context (includes raw code blocks)
 let displayMessages = []; // Cleaned messages for canvas display
 let isLoading = false;
-let selectedBackend = null; // 'claude' | 'fable' | 'openai' | 'ollama' - set once /api/backends resolves
+let selectedBackend = null; // 'claude' | 'fable' | 'openai' | 'openai-sol' | 'ollama' - set once /api/backends resolves
 let backendLabels = {}; // id -> display label from /api/backends
 
 /** Human-readable name for the currently selected model/provider. */
@@ -537,6 +537,7 @@ function getActiveModelDisplayName() {
 		claude: 'Claude',
 		fable: 'Claude Fable',
 		openai: 'GPT6 Astra',
+		'openai-sol': 'GPT6.1 Sol',
 		ollama: 'Ollama'
 	};
 	return fallbacks[selectedBackend] || 'Assistant';
@@ -5327,7 +5328,7 @@ function buildUserContent(userMessage, attachments, backend) {
 		return { content: text || '(see attached image)', images: images.map(a => a.base64) };
 	}
 
-	if (backend === 'openai') {
+	if (backend === 'openai' || backend === 'openai-sol') {
 		const parts = [{ type: 'text', text: text || '(see attached image)' }];
 		for (const att of images) {
 			parts.push({ type: 'image_url', image_url: { url: `data:${att.mediaType};base64,${att.base64}` } });
