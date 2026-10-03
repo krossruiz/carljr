@@ -1369,6 +1369,24 @@
 			color: #fff;
 			border-color: transparent;
 		}
+		/* Community scene entries: name (+ dates) on one row, actions on the next.
+		   Scoped so Scenes and Community Themes keep the single-row item layout. */
+		#dchat-community-list > .dchat-community-scene {
+			flex-direction: column;
+			align-items: stretch;
+			gap: 8px;
+		}
+		.dchat-community-scene-name-row {
+			width: 100%;
+			min-width: 0;
+		}
+		.dchat-community-scene-actions-row {
+			width: 100%;
+		}
+		.dchat-community-scene-actions-row .dchat-btn {
+			flex: 1;
+			text-align: center;
+		}
 
 		/* Nested sub-tabs (Chat Scene|Theme, Community Scenes|Themes) */
 		#dchat-chat-subtabs,

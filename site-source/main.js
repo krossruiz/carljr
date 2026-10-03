@@ -3152,20 +3152,20 @@ function renderCommunitySceneList(scenes) {
 	}
 	for (const cs of scenes) {
 		const item = document.createElement('div');
-		item.className = 'dchat-scene-item';
+		item.className = 'dchat-scene-item dchat-community-scene';
 
-		const info = document.createElement('div');
-		info.className = 'dchat-scene-info';
+		const nameRow = document.createElement('div');
+		nameRow.className = 'dchat-scene-info dchat-community-scene-name-row';
 
 		const name = document.createElement('div');
 		name.className = 'dchat-scene-name';
 		name.textContent = cs.name;
 		name.title = cs.name + (cs.id ? ` (${cs.id})` : '');
-		info.appendChild(name);
-		appendCommunityDatesEl(info, cs);
+		nameRow.appendChild(name);
+		appendCommunityDatesEl(nameRow, cs);
 
 		const actions = document.createElement('div');
-		actions.className = 'dchat-scene-actions';
+		actions.className = 'dchat-scene-actions dchat-community-scene-actions-row';
 
 		const loadKey = communitySceneKeyFrom(cs);
 		if (loadKey && loadedScenes.some(s => s.communityKey === loadKey && s.active)) {
@@ -3190,7 +3190,7 @@ function renderCommunitySceneList(scenes) {
 		rename.addEventListener('click', () => showRenameModal(cs));
 
 		actions.append(load, share, rename);
-		item.append(info, actions);
+		item.append(nameRow, actions);
 		dchatCommunityList.appendChild(item);
 	}
 }
