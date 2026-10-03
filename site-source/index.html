@@ -871,10 +871,19 @@
 
 		#desktop-chat-input-row {
 			display: flex;
+			flex-direction: column;
 			gap: 8px;
 			padding: 12px;
 			border-top: 1px solid rgba(255, 255, 255, 0.06);
 			flex-shrink: 0;
+		}
+
+		#desktop-chat-tools-row,
+		#desktop-chat-compose-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			min-width: 0;
 		}
 
 		#desktop-chat-input {
@@ -1768,11 +1777,15 @@
 				<div id="desktop-attachments" hidden></div>
 				<div id="desktop-chat-input-row">
 					<input type="file" id="desktop-attach-input" multiple accept="image/*,.txt,.md,.markdown,.json,.js,.jsx,.ts,.tsx,.py,.csv,.html,.htm,.css,.xml,.yaml,.yml,.log,.c,.cpp,.h,.hpp,.java,.go,.rs,.sh,.sql,.ini,.toml" hidden />
-					<button id="desktop-attach-button" title="Attach images or text files">📎</button>
-					<button type="button" id="desktop-files-picker-button" title="Choose from Files library">📄</button>
-					<input type="text" id="desktop-chat-input" placeholder="Ask about the scene..." autocomplete="off" />
-					<button id="desktop-mic-button" title="Toggle always-on voice input">🎤</button>
-					<button id="desktop-send-button">Send</button>
+					<div id="desktop-chat-tools-row">
+						<button id="desktop-attach-button" title="Attach images or text files">📎</button>
+						<button type="button" id="desktop-files-picker-button" title="Choose from Files library">📄</button>
+						<button id="desktop-mic-button" title="Toggle always-on voice input">🎤</button>
+					</div>
+					<div id="desktop-chat-compose-row">
+						<input type="text" id="desktop-chat-input" placeholder="Ask about the scene..." autocomplete="off" />
+						<button id="desktop-send-button">Send</button>
+					</div>
 				</div>
 			</div>
 
