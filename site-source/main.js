@@ -141,6 +141,7 @@ const dchatScenesButtonsMount = document.getElementById('dchat-scenes-buttons');
 const dchatSceneList = document.getElementById('dchat-scene-list');
 const dchatExportCombinedMount = document.getElementById('dchat-export-combined-mount');
 const dchatCommunityButtonsMount = document.getElementById('dchat-community-buttons');
+const dchatCommunityLoadModeMount = document.getElementById('dchat-community-loadmode');
 const dchatCommunityList = document.getElementById('dchat-community-list');
 const dchatThemesButtonsMount = document.getElementById('dchat-themes-buttons');
 const dchatThemesList = document.getElementById('dchat-themes-list');
@@ -311,6 +312,12 @@ function handleMenuAction(action) {
 			break;
 		case 'community:refresh':
 			refreshCommunityScenes();
+			break;
+		case 'community:loadMode:clear':
+			setCommunityLoadMode('clear');
+			break;
+		case 'community:loadMode:layer':
+			setCommunityLoadMode('layer');
 			break;
 		case 'themes:upload':
 			uploadCurrentThemeToCommunity();
@@ -591,6 +598,15 @@ let scenePanelSubTab = 'scenes'; // 'scenes' | 'files' | 'code' | 'community' - 
 let communityScenesCache = []; // last-fetched list, so the XR panel has something to draw without re-fetching every frame
 let communityThemesCache = [];
 let communitySection = 'scenes'; // Community tab: 'scenes' | 'themes'
+// Community scene load: 'clear' blanks the world first (default); 'layer' adds.
+let communityLoadMode = 'clear';
+// Bumped by a clear-load (and used to drop stale applies). See beginCommunityLoad.
+let communityClearEpoch = 0;
+let communityLayerCancel = 0;
+// In-flight fetches keyed by `${mode}:${communityKey}` so spam-clicks share one apply.
+const communityLoadInflight = new Map();
+// Applies run one at a time so two loads can't scene.add while the other is still executing.
+let communityApplyChain = Promise.resolve();
 let chatSection = 'scene'; // Chat tab: 'scene' | 'theme'
 let displayOnlyMode = false; // share URL opened with editor chrome stripped
 let pendingShare = null; // share modal payload { id, name, editorUrl, viewUrl }
@@ -3053,10 +3069,15 @@ function renderCommunitySceneList(scenes) {
 		const actions = document.createElement('div');
 		actions.className = 'dchat-scene-actions';
 
+		const loadKey = communitySceneKeyFrom(cs);
+		if (loadKey && loadedScenes.some(s => s.communityKey === loadKey && s.active)) {
+			item.classList.add('active');
+		}
+
 		const load = document.createElement('button');
 		load.className = 'dchat-btn';
 		load.textContent = 'Load';
-		load.addEventListener('click', () => loadCommunityScene(cs));
+		load.addEventListener('click', () => { loadCommunityScene(cs).catch(() => {}); });
 
 		const share = document.createElement('button');
 		share.className = 'dchat-btn';
@@ -3076,33 +3097,225 @@ function renderCommunitySceneList(scenes) {
 	}
 }
 
-function loadCommunityScene(cs) {
-	updateStatus(`Loading "${cs.name}"...`, 'connecting');
+// Identity for "this community scene is already in the world": server id,
+// else the blob url for legacy records that have no id. One loadedScenes
+// entry per key; code runs only when that entry is not already active
+// (layer) or after the world is blanked (clear / replace).
+function communitySceneKeyFrom(cs) {
+	if (!cs) return null;
+	const id = cs.id || cs.communityId;
+	if (id) return `id:${id}`;
+	if (cs.url) return `url:${cs.url}`;
+	return null;
+}
+
+function findLoadedByCommunityKey(key) {
+	if (!key) return null;
+	return loadedScenes.find(s => s.communityKey === key) || null;
+}
+
+function communityLoadModeButtons() {
+	return [
+		{
+			id: 'loadClear',
+			label: 'Clear first',
+			action: 'community:loadMode:clear',
+			variant: communityLoadMode === 'clear' ? 'active' : 'inactiveToggle'
+		},
+		{
+			id: 'loadLayer',
+			label: 'Layer',
+			action: 'community:loadMode:layer',
+			variant: communityLoadMode === 'layer' ? 'active' : 'inactiveToggle'
+		}
+	];
+}
+
+function renderCommunityLoadModeControls() {
+	if (!dchatCommunityLoadModeMount) return;
+	mountButtonsToDOM(
+		dchatCommunityLoadModeMount,
+		communityLoadModeButtons(),
+		{ width: 384, height: 36, gap: 8, perRow: 2, fontSize: 12 },
+		handleMenuAction
+	);
+}
+
+function setCommunityLoadMode(mode) {
+	communityLoadMode = mode === 'layer' ? 'layer' : 'clear';
+	renderCommunityLoadModeControls();
+	if (scenePanelSubTab === 'community') renderScenePanel();
+	updateStatus(
+		communityLoadMode === 'layer'
+			? 'Community load: layer onto the current scene'
+			: 'Community load: clear the scene first',
+		''
+	);
+}
+
+// Clear-load bumps both tokens so older clear-loads and older layer-loads
+// do not apply. Layer-load bumps only the clear epoch (a later layer must
+// not be wiped by an in-flight clear) and does not cancel other layers.
+function beginCommunityLoad(loadMode) {
+	if (loadMode === 'clear') {
+		communityClearEpoch += 1;
+		communityLayerCancel += 1;
+		return { mode: 'clear', epoch: communityClearEpoch, layerCancel: communityLayerCancel };
+	}
+	communityClearEpoch += 1;
+	return { mode: 'layer', epoch: communityClearEpoch, layerCancel: communityLayerCancel };
+}
+
+function communityLoadStillCurrent(ticket) {
+	if (ticket.mode === 'clear') return ticket.epoch === communityClearEpoch;
+	return ticket.layerCancel === communityLayerCancel;
+}
+
+/** Blank the live world the same way Clear scene does, without the confirm
+ *  and without dropping imported files from the Scenes list. */
+function blankLiveSceneForCommunityLoad() {
+	for (const sc of loadedScenes) sc.active = false;
+	executedCodeBlocks = [];
+	clearUserObjects();
+}
+
+function runLoadedSceneCode(sc) {
+	const blocks = sc.codeBlocks || [];
+	return Promise.all(blocks.map(code =>
+		Promise.resolve(executeVrCode(code)).catch(err => {
+			console.error(`Scene "${sc.name}" load error:`, err);
+		})
+	));
+}
+
+function enqueueCommunityApply(fn) {
+	const apply = communityApplyChain.then(fn, fn);
+	communityApplyChain = apply.then(() => {}, () => {});
+	return apply;
+}
+
+function upsertCommunityLoadedScene(data, fallbackName, key) {
+	let sc = findLoadedByCommunityKey(key);
+	if (!sc) {
+		sc = {
+			id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+			name: data.name || fallbackName,
+			thumbnail: data.thumbnail || '',
+			codeBlocks: data.codeBlocks,
+			active: true,
+			createdAt: data.createdAt || new Date().toISOString(),
+			_thumbImage: null,
+			communityKey: key,
+			communityId: data.id || (key.startsWith('id:') ? key.slice(3) : null)
+		};
+		loadedScenes.push(sc);
+	} else {
+		sc.name = data.name || sc.name || fallbackName;
+		if (data.thumbnail) sc.thumbnail = data.thumbnail;
+		sc.codeBlocks = Array.isArray(data.codeBlocks) ? data.codeBlocks : sc.codeBlocks;
+		sc.active = true;
+		sc.communityKey = key;
+		if (data.id) sc.communityId = data.id;
+	}
+	if (data.editorUrl) sc.editorUrl = data.editorUrl;
+	if (data.viewUrl) sc.viewUrl = data.viewUrl;
+	return sc;
+}
+
+function finishCommunityLoadUi() {
+	loadSceneThumbnails();
+	notifyCodeEditorExternalChange();
+	if (dchatCommunityList && communityScenesCache.length) renderCommunitySceneList(communityScenesCache);
+	else renderScenePanel();
+}
+
+function loadCommunityScene(cs, { mode = communityLoadMode } = {}) {
+	const name = (cs && cs.name) || 'Community scene';
+	const key = communitySceneKeyFrom(cs);
+	if (!key) {
+		const err = new Error('Community scene has no id');
+		updateStatus(`Load error: ${err.message}`, 'error');
+		return Promise.reject(err);
+	}
+	const loadMode = mode === 'layer' ? 'layer' : 'clear';
+
+	// Layer + already active: no-op. Never execute the code again.
+	if (loadMode === 'layer') {
+		const existing = findLoadedByCommunityKey(key);
+		if (existing && existing.active) {
+			updateStatus(`"${existing.name}" is already loaded`, '');
+			return Promise.resolve(existing);
+		}
+	}
+
+	const inflightKey = `${loadMode}:${key}`;
+	const inflight = communityLoadInflight.get(inflightKey);
+	// Reuse only a still-current fetch. A superseded one resolves to null and
+	// must not swallow a newer click on the same scene.
+	if (inflight && communityLoadStillCurrent(inflight.ticket)) {
+		updateStatus(`Loading "${name}"...`, 'connecting');
+		return inflight.promise;
+	}
+
+	const ticket = beginCommunityLoad(loadMode);
+	updateStatus(`Loading "${name}"...`, 'connecting');
 	const fetchUrl = cs.id ? `/api/community-scenes/${encodeURIComponent(cs.id)}` : cs.url;
-	fetch(fetchUrl)
+
+	const promise = fetch(fetchUrl)
 		.then(res => {
 			if (!res.ok) throw new Error('Failed to fetch community scene');
 			return res.json();
 		})
-		.then(data => {
-			const sc = addLoadedScene(data, data.name || cs.name);
-			updateStatus(`Loaded "${sc.name}"`, 'connected');
+		.then(data => enqueueCommunityApply(async () => {
+			if (!data || !Array.isArray(data.codeBlocks)) {
+				throw new Error('Invalid scene data: missing codeBlocks');
+			}
+			if (!communityLoadStillCurrent(ticket)) return null;
+			// Prefer the id we asked for so list rows and the fetched record match.
+			const resolvedKey = communitySceneKeyFrom({ id: cs.id || data.id, url: cs.url || data.url }) || key;
+			if (loadMode === 'clear') {
+				// Replace in place: one entry, world blanked, code run once.
+				blankLiveSceneForCommunityLoad();
+				const sc = upsertCommunityLoadedScene(data, data.name || name, resolvedKey);
+				await runLoadedSceneCode(sc);
+				finishCommunityLoadUi();
+				updateStatus(`Loaded "${sc.name}"`, 'connected');
+				return sc;
+			}
+			const existing = findLoadedByCommunityKey(resolvedKey);
+			if (existing && existing.active) {
+				updateStatus(`"${existing.name}" is already loaded`, '');
+				return existing;
+			}
+			const sc = upsertCommunityLoadedScene(data, data.name || name, resolvedKey);
+			await runLoadedSceneCode(sc);
+			finishCommunityLoadUi();
+			updateStatus(`Layered "${sc.name}"`, 'connected');
 			return sc;
-		})
+		}))
 		.catch(err => {
 			updateStatus(`Load error: ${err.message}`, 'error');
+			throw err;
+		})
+		.finally(() => {
+			const cur = communityLoadInflight.get(inflightKey);
+			if (cur && cur.promise === promise) communityLoadInflight.delete(inflightKey);
 		});
+
+	communityLoadInflight.set(inflightKey, { promise, ticket });
+	return promise;
 }
 
 async function loadCommunitySceneById(sceneId, { activate = true } = {}) {
-	const res = await fetch(`/api/community-scenes/${encodeURIComponent(sceneId)}`);
-	const data = await res.json();
-	if (!res.ok) throw new Error(data.error || 'Scene not found');
-	if (activate) {
-		const sc = addLoadedScene(data, data.name || 'Shared Scene');
-		return { ...sc, editorUrl: data.editorUrl, viewUrl: data.viewUrl, id: data.id || sceneId };
+	if (!activate) {
+		const res = await fetch(`/api/community-scenes/${encodeURIComponent(sceneId)}`);
+		const data = await res.json();
+		if (!res.ok) throw new Error(data.error || 'Scene not found');
+		return data;
 	}
-	return data;
+	const sc = await loadCommunityScene({ id: sceneId, name: 'Shared Scene' });
+	if (!sc) throw new Error('Scene not found');
+	return sc;
 }
 
 async function renameCommunityScene() {
@@ -4015,10 +4228,22 @@ function renderScenePanel() {
 			const btnLayout = buildButtonLayout(COMMUNITY_BUTTONS, {
 				width: w - 24, x: 12, y: contentTop, height: 44, perRow: 2, gap: 8
 			});
-			scenePanelButtonBoxes = btnLayout.boxes;
-			drawButtonsToCanvas(ctx, scenePanelButtonBoxes, { fontSize: 14 });
+			drawButtonsToCanvas(ctx, btnLayout.boxes, { fontSize: 14 });
 
-			const sepY = contentTop + btnLayout.totalHeight + 8;
+			const modeY = contentTop + btnLayout.totalHeight + 8;
+			const modeLayout = buildButtonLayout(communityLoadModeButtons(), {
+				width: w - 24, x: 12, y: modeY, height: 34, perRow: 2, gap: 8
+			});
+			drawButtonsToCanvas(ctx, modeLayout.boxes, { fontSize: 12 });
+			scenePanelButtonBoxes = btnLayout.boxes.concat(modeLayout.boxes);
+
+			const hintY = modeY + modeLayout.totalHeight + 14;
+			ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+			ctx.textAlign = 'center';
+			ctx.fillText('Clear blanks the scene · Layer adds · no duplicate loads', w / 2, hintY);
+
+			const sepY = hintY + 10;
 			ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
 			ctx.fillRect(12, sepY, w - 24, 1);
 
@@ -4037,8 +4262,10 @@ function renderScenePanel() {
 				for (let i = 0; i < maxVisible && i < communityScenesCache.length; i++) {
 					const cs = communityScenesCache[i];
 					const itemY = listTop + i * itemH;
+					const rowKey = communitySceneKeyFrom(cs);
+					const rowLoaded = rowKey && loadedScenes.some(s => s.communityKey === rowKey && s.active);
 
-					ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+					ctx.fillStyle = rowLoaded ? 'rgba(99, 102, 241, 0.22)' : 'rgba(255, 255, 255, 0.03)';
 					roundRect(ctx, 8, itemY, w - 16, itemH - 4, 8);
 					ctx.fill();
 
@@ -4155,7 +4382,7 @@ function handleScenePanelHit(uv) {
 		if (communitySection === 'themes') {
 			if (idx < communityThemesCache.length) applyCommunityTheme(communityThemesCache[idx]);
 		} else if (idx < communityScenesCache.length) {
-			loadCommunityScene(communityScenesCache[idx]);
+			loadCommunityScene(communityScenesCache[idx]).catch(() => {});
 		}
 	}
 }
@@ -5952,6 +6179,7 @@ dchatResetCameraBtn.addEventListener('click', () => {
 mountButtonsToDOM(dchatScenesButtonsMount, SCENES_BUTTONS, { width: 384, height: 44, gap: 8, minWidth: 100, fontSize: 12 }, handleMenuAction);
 mountButtonsToDOM(dchatExportCombinedMount, EXPORT_COMBINED_BUTTON, { width: 384, height: 44, gap: 8, perRow: 1, fontSize: 13 }, handleMenuAction);
 mountButtonsToDOM(dchatCommunityButtonsMount, COMMUNITY_BUTTONS, { width: 384, height: 44, gap: 8, perRow: 2, fontSize: 12 }, handleMenuAction);
+renderCommunityLoadModeControls();
 if (dchatThemesButtonsMount) {
 	mountButtonsToDOM(dchatThemesButtonsMount, THEME_BUTTONS, { width: 384, height: 44, gap: 8, perRow: 3, fontSize: 11 }, handleMenuAction);
 }

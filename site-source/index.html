@@ -779,6 +779,13 @@
 		   main.js. flex-shrink:0 keeps them from being squashed by the
 		   scrollable list below them. */
 		#dchat-scenes-buttons, #dchat-community-buttons { flex-shrink: 0; }
+		#dchat-community-loadmode { flex-shrink: 0; margin-top: 8px; }
+		.dchat-community-loadhint {
+			margin: 6px 2px 0;
+			font-size: 11px;
+			line-height: 1.35;
+			color: var(--dchat-text-muted, rgba(255,255,255,0.45));
+		}
 
 		#dchat-community-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; min-height: 0; margin-top: 10px; }
 		#dchat-community-list::-webkit-scrollbar { width: 8px; }
@@ -1885,6 +1892,8 @@
 
 				<div id="dchat-community-section-scenes" class="dchat-community-section active">
 					<div id="dchat-community-buttons"></div>
+					<div id="dchat-community-loadmode"></div>
+					<p class="dchat-community-loadhint">Clear first loads onto a blank scene. Layer keeps what is already there. Loading a scene again never stacks a second copy.</p>
 					<div id="dchat-community-list"></div>
 				</div>
 
