@@ -5999,6 +5999,7 @@ let _chatSizeBeforeExpand = null;
 function setDesktopChatMinimized(minimized) {
 	desktopChat.classList.toggle('hidden', minimized);
 	if (desktopChatReopenBtn) desktopChatReopenBtn.classList.toggle('visible', minimized);
+	if (!minimized) fitDesktopChatToViewport();
 }
 
 function saveDesktopChatSize() {
@@ -6014,24 +6015,149 @@ function saveDesktopChatSize() {
 	} catch { /* ignore */ }
 }
 
+function isNarrowDesktopChat() {
+	return window.matchMedia('(max-width: 720px)').matches;
+}
+
+let _safeAreaProbe = null;
+let _fitChatRaf = 0;
+
+function readSafeAreaInsets() {
+	if (!_safeAreaProbe) {
+		_safeAreaProbe = document.createElement('div');
+		_safeAreaProbe.setAttribute('aria-hidden', 'true');
+		_safeAreaProbe.style.cssText = [
+			'position:fixed',
+			'top:0',
+			'left:0',
+			'visibility:hidden',
+			'pointer-events:none',
+			'padding-top:constant(safe-area-inset-top)',
+			'padding-top:env(safe-area-inset-top,0px)',
+			'padding-right:constant(safe-area-inset-right)',
+			'padding-right:env(safe-area-inset-right,0px)',
+			'padding-bottom:constant(safe-area-inset-bottom)',
+			'padding-bottom:env(safe-area-inset-bottom,0px)',
+			'padding-left:constant(safe-area-inset-left)',
+			'padding-left:env(safe-area-inset-left,0px)'
+		].join(';');
+		document.documentElement.appendChild(_safeAreaProbe);
+	}
+	const cs = getComputedStyle(_safeAreaProbe);
+	return {
+		top: parseFloat(cs.paddingTop) || 0,
+		right: parseFloat(cs.paddingRight) || 0,
+		bottom: parseFloat(cs.paddingBottom) || 0,
+		left: parseFloat(cs.paddingLeft) || 0
+	};
+}
+
+// Visible rectangle in getBoundingClientRect coordinates. visualViewport
+// excludes the URL bar and other browser chrome; safe-area insets cover the
+// status bar and home indicator drawn on top of that viewport.
+function desktopChatVisibleBox() {
+	const vv = window.visualViewport;
+	const safe = readSafeAreaInsets();
+	const margin = 8;
+	const width = vv && vv.width > 0 ? vv.width : window.innerWidth;
+	const height = vv && vv.height > 0 ? vv.height : window.innerHeight;
+	return {
+		left: safe.left + margin,
+		top: safe.top + margin,
+		right: width - safe.right - margin,
+		bottom: height - safe.bottom - margin
+	};
+}
+
+// position:fixed top/left stay on the layout viewport in iOS Safari, while
+// getBoundingClientRect is visual. The difference is visualViewport.offsetTop
+// while chrome shows, and it changes when the URL bar hides. Measuring it
+// from the panel avoids adding that offset a second time on browsers where
+// fixed already tracks the visual viewport.
+function desktopChatFixedShift() {
+	const vv = window.visualViewport;
+	const fallback = {
+		top: vv ? vv.offsetTop : 0,
+		left: vv ? vv.offsetLeft : 0
+	};
+	if (!desktopChat || !desktopChat.getClientRects().length) return fallback;
+	const cs = getComputedStyle(desktopChat);
+	const rect = desktopChat.getBoundingClientRect();
+	const top = parseFloat(cs.top);
+	const left = parseFloat(cs.left);
+	if (!Number.isFinite(top) || !Number.isFinite(left)) return fallback;
+	return { top: top - rect.top, left: left - rect.left };
+}
+
+function clampRectToBox(rect, box, minW = 0, minH = 0) {
+	const maxW = Math.max(0, box.right - box.left);
+	const maxH = Math.max(0, box.bottom - box.top);
+	const width = Math.min(Math.max(rect.width, Math.min(minW, maxW)), maxW);
+	const height = Math.min(Math.max(rect.height, Math.min(minH, maxH)), maxH);
+	let left = rect.left;
+	let top = rect.top;
+	if (left + width > box.right) left = box.right - width;
+	if (top + height > box.bottom) top = box.bottom - height;
+	if (left < box.left) left = box.left;
+	if (top < box.top) top = box.top;
+	return { left, top, width, height };
+}
+
+function syncDesktopChatViewportVars(box, shift) {
+	const root = document.documentElement.style;
+	const names = ['--dchat-vv-top', '--dchat-vv-left', '--dchat-vv-width', '--dchat-vv-height'];
+	if (!box) {
+		for (const name of names) root.removeProperty(name);
+		return;
+	}
+	const next = {
+		'--dchat-vv-top': `${Math.round(box.top + shift.top)}px`,
+		'--dchat-vv-left': `${Math.round(box.left + shift.left)}px`,
+		'--dchat-vv-width': `${Math.round(Math.max(0, box.right - box.left))}px`,
+		'--dchat-vv-height': `${Math.round(Math.max(0, box.bottom - box.top))}px`
+	};
+	for (const name of names) {
+		if (root.getPropertyValue(name) !== next[name]) root.setProperty(name, next[name]);
+	}
+}
+
 function restoreDesktopChatSize() {
 	try {
 		const raw = localStorage.getItem(CHAT_SIZE_KEY);
 		if (!raw) return;
 		const s = JSON.parse(raw);
 		if (!s || !s.width || !s.height) return;
-		const narrow = window.matchMedia('(max-width: 720px)').matches;
-		const margin = narrow ? 8 : 0;
-		const vw = window.innerWidth;
-		const vh = window.innerHeight;
-		const maxW = Math.max(narrow ? 160 : 280, vw - (narrow ? margin * 2 : 16));
-		const maxH = Math.max(narrow ? 180 : 220, vh - (narrow ? margin * 2 : 16));
-		const minW = Math.min(280, maxW);
-		const minH = Math.min(220, maxH);
-		const w = Math.max(minW, Math.min(maxW, s.width));
-		const h = Math.max(minH, Math.min(maxH, s.height));
-		const left = Math.max(margin, Math.min(vw - w - margin, s.left ?? 24));
-		const top = Math.max(margin, Math.min(vh - h - margin, s.top ?? 80));
+		const narrow = isNarrowDesktopChat();
+		let w = s.width;
+		let h = s.height;
+		let left = s.left ?? 24;
+		let top = s.top ?? 80;
+		if (narrow) {
+			// Saved left/top are visual coordinates. Do not trust them on their
+			// own: clamp into the current visual viewport, then convert to the
+			// fixed-position coordinate system.
+			const box = desktopChatVisibleBox();
+			if (box.right - box.left >= 32 && box.bottom - box.top >= 32) {
+				const clamped = clampRectToBox({ left, top, width: w, height: h }, box, 280, 220);
+				const shift = desktopChatFixedShift();
+				w = clamped.width;
+				h = clamped.height;
+				left = clamped.left + shift.left;
+				top = clamped.top + shift.top;
+			}
+		} else {
+			const margin = 0;
+			const vw = window.innerWidth;
+			const vh = window.innerHeight;
+			const maxW = Math.max(280, vw - 16);
+			const maxH = Math.max(220, vh - 16);
+			const minW = Math.min(280, maxW);
+			const minH = Math.min(220, maxH);
+			w = Math.max(minW, Math.min(maxW, s.width));
+			h = Math.max(minH, Math.min(maxH, s.height));
+			left = Math.max(margin, Math.min(vw - w - margin, s.left ?? 24));
+			top = Math.max(margin, Math.min(vh - h - margin, s.top ?? 80));
+		}
 		desktopChat.style.width = `${w}px`;
 		desktopChat.style.height = `${h}px`;
 		desktopChat.style.left = `${left}px`;
@@ -6040,38 +6166,49 @@ function restoreDesktopChatSize() {
 	} catch { /* ignore */ }
 }
 
-// Saved geometry (or a first layout pass) can still hang off a phone.
-// Only nudges when the panel overflows a narrow screen, so desktop stays put.
-// Uses the layout viewport (innerWidth/Height), not visualViewport offsets,
-// so the iOS URL bar showing/hiding does not slide the window.
+// Phones only. Always pulls the header (minimize / expand) fully inside the
+// visual viewport — a saved top, or a top that was correct for the layout
+// viewport, is not enough when Safari's URL bar or status bar covers it.
+// Re-run on visualViewport resize and scroll so showing or hiding chrome
+// moves the panel with the visible area instead of leaving the header above it.
 function fitDesktopChatToViewport() {
-	if (!desktopChat || desktopChat.classList.contains('expanded')) return;
-	if (!window.matchMedia('(max-width: 720px)').matches) return;
-	const margin = 8;
-	const vw = window.innerWidth;
-	const vh = window.innerHeight;
+	if (!desktopChat) return;
+	if (!isNarrowDesktopChat()) {
+		syncDesktopChatViewportVars(null, null);
+		return;
+	}
+	if (desktopChat.classList.contains('dragging') || desktopChat.classList.contains('resizing')) return;
+	const box = desktopChatVisibleBox();
+	if (box.right - box.left < 32 || box.bottom - box.top < 32) return;
+	const shift = desktopChatFixedShift();
+	syncDesktopChatViewportVars(box, shift);
+	if (!desktopChat.getClientRects().length) return;
+	if (desktopChat.classList.contains('expanded')) return;
+
 	const rect = desktopChat.getBoundingClientRect();
-	const maxW = Math.max(120, vw - margin * 2);
-	const maxH = Math.max(160, vh - margin * 2);
-	const overflows =
-		rect.left < margin - 1 ||
-		rect.top < margin - 1 ||
-		rect.right > vw - margin + 1 ||
-		rect.bottom > vh - margin + 1;
-	if (!overflows) return;
-	const w = Math.min(rect.width, maxW);
-	const h = Math.min(rect.height, maxH);
-	let left = rect.left;
-	let top = rect.top;
-	if (left + w > vw - margin) left = vw - margin - w;
-	if (top + h > vh - margin) top = vh - margin - h;
-	if (left < margin) left = margin;
-	if (top < margin) top = margin;
-	desktopChat.style.width = `${Math.round(w)}px`;
-	desktopChat.style.height = `${Math.round(h)}px`;
-	desktopChat.style.left = `${Math.round(left)}px`;
-	desktopChat.style.top = `${Math.round(top)}px`;
+	const next = clampRectToBox(rect, box);
+	if (next.width < 1 || next.height < 1) return;
+	const eps = 0.5;
+	if (
+		Math.abs(next.left - rect.left) < eps &&
+		Math.abs(next.top - rect.top) < eps &&
+		Math.abs(next.width - rect.width) < eps &&
+		Math.abs(next.height - rect.height) < eps
+	) return;
+
+	desktopChat.style.width = `${Math.round(next.width)}px`;
+	desktopChat.style.height = `${Math.round(next.height)}px`;
+	desktopChat.style.left = `${Math.round(next.left + shift.left)}px`;
+	desktopChat.style.top = `${Math.round(next.top + shift.top)}px`;
 	desktopChat.style.right = 'auto';
+}
+
+function scheduleFitDesktopChat() {
+	if (_fitChatRaf) return;
+	_fitChatRaf = requestAnimationFrame(() => {
+		_fitChatRaf = 0;
+		fitDesktopChatToViewport();
+	});
 }
 
 function toggleDesktopChatExpanded() {
@@ -6097,20 +6234,36 @@ function toggleDesktopChatExpanded() {
 			desktopChat.style.height = `${s.height}px`;
 			desktopChat.style.left = `${s.left}px`;
 			desktopChat.style.top = `${s.top}px`;
+			desktopChat.style.right = 'auto';
 		}
 		_chatSizeBeforeExpand = null;
 		if (desktopChatExpandBtn) {
 			desktopChatExpandBtn.title = 'Expand window';
 			desktopChatExpandBtn.innerHTML = '&#x26F6;';
 		}
-		saveDesktopChatSize();
 	}
+	// Sync while both states are in the DOM so expanded fills the visual
+	// viewport and a restored window cannot sit under the status bar.
+	fitDesktopChatToViewport();
+	if (!expanding) saveDesktopChatSize();
 }
 
 restoreDesktopChatSize();
 fitDesktopChatToViewport();
-window.addEventListener('resize', fitDesktopChatToViewport);
-window.addEventListener('orientationchange', fitDesktopChatToViewport);
+window.addEventListener('resize', scheduleFitDesktopChat);
+window.addEventListener('orientationchange', () => {
+	scheduleFitDesktopChat();
+	// iOS reports the new visual viewport a beat after orientationchange.
+	setTimeout(scheduleFitDesktopChat, 350);
+});
+if (window.visualViewport) {
+	window.visualViewport.addEventListener('resize', scheduleFitDesktopChat);
+	window.visualViewport.addEventListener('scroll', scheduleFitDesktopChat);
+}
+window.addEventListener('pageshow', scheduleFitDesktopChat);
+document.addEventListener('visibilitychange', () => {
+	if (document.visibilityState === 'visible') scheduleFitDesktopChat();
+});
 
 // Dragging via the header. Uses document-level mouse listeners (rather than
 // pointer capture) so it keeps tracking even if the cursor briefly leaves the
@@ -6118,6 +6271,8 @@ window.addEventListener('orientationchange', fitDesktopChatToViewport);
 (function initDesktopChatDrag() {
 	let dragging = false;
 	let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+	let shiftLeft = 0, shiftTop = 0;
+	let phoneBox = null;
 
 	desktopChatHeader.addEventListener('mousedown', (e) => {
 		if (e.target.closest('#desktop-chat-header-buttons')) return;
@@ -6128,6 +6283,16 @@ window.addEventListener('orientationchange', fitDesktopChatToViewport);
 		startY = e.clientY;
 		startLeft = rect.left;
 		startTop = rect.top;
+		if (isNarrowDesktopChat()) {
+			const shift = desktopChatFixedShift();
+			shiftLeft = shift.left;
+			shiftTop = shift.top;
+			phoneBox = desktopChatVisibleBox();
+		} else {
+			shiftLeft = 0;
+			shiftTop = 0;
+			phoneBox = null;
+		}
 		e.preventDefault();
 	});
 
@@ -6136,16 +6301,24 @@ window.addEventListener('orientationchange', fitDesktopChatToViewport);
 		const rect = desktopChat.getBoundingClientRect();
 		let newLeft = startLeft + (e.clientX - startX);
 		let newTop = startTop + (e.clientY - startY);
-		newLeft = Math.max(0, Math.min(window.innerWidth - rect.width, newLeft));
-		newTop = Math.max(0, Math.min(window.innerHeight - rect.height, newTop));
-		desktopChat.style.left = `${newLeft}px`;
-		desktopChat.style.top = `${newTop}px`;
+		if (phoneBox) {
+			newLeft = Math.max(phoneBox.left, Math.min(phoneBox.right - rect.width, newLeft));
+			newTop = Math.max(phoneBox.top, Math.min(phoneBox.bottom - rect.height, newTop));
+			desktopChat.style.left = `${newLeft + shiftLeft}px`;
+			desktopChat.style.top = `${newTop + shiftTop}px`;
+		} else {
+			newLeft = Math.max(0, Math.min(window.innerWidth - rect.width, newLeft));
+			newTop = Math.max(0, Math.min(window.innerHeight - rect.height, newTop));
+			desktopChat.style.left = `${newLeft}px`;
+			desktopChat.style.top = `${newTop}px`;
+		}
 	});
 
 	document.addEventListener('mouseup', () => {
 		if (!dragging) return;
 		dragging = false;
 		desktopChat.classList.remove('dragging');
+		fitDesktopChatToViewport();
 	});
 })();
 
@@ -6180,28 +6353,37 @@ window.addEventListener('orientationchange', fitDesktopChatToViewport);
 		if (activePointerId != null && e.pointerId !== activePointerId) return;
 		const dx = e.clientX - startX;
 		const dy = e.clientY - startY;
+		const phone = isNarrowDesktopChat();
+		const box = phone ? desktopChatVisibleBox() : null;
+		const minW = phone ? Math.min(MIN_W, Math.max(120, box.right - box.left)) : MIN_W;
+		const minH = phone ? Math.min(MIN_H, Math.max(120, box.bottom - box.top)) : MIN_H;
+		const shift = phone ? desktopChatFixedShift() : null;
 
 		if (dir.includes('e')) {
-			const newWidth = Math.max(MIN_W, Math.min(window.innerWidth - startLeft - 8, startWidth + dx));
+			const limit = phone ? box.right - startLeft : window.innerWidth - startLeft - 8;
+			const newWidth = Math.max(minW, Math.min(limit, startWidth + dx));
 			desktopChat.style.width = `${newWidth}px`;
 		}
 		if (dir.includes('s')) {
-			const newHeight = Math.max(MIN_H, Math.min(window.innerHeight - startTop - 8, startHeight + dy));
+			const limit = phone ? box.bottom - startTop : window.innerHeight - startTop - 8;
+			const newHeight = Math.max(minH, Math.min(limit, startHeight + dy));
 			desktopChat.style.height = `${newHeight}px`;
 		}
 		if (dir.includes('w')) {
-			const maxDx = startWidth - MIN_W;
-			const minDx = -startLeft;
+			const maxDx = startWidth - minW;
+			const minDx = phone ? box.left - startLeft : -startLeft;
 			const clampedDx = Math.max(minDx, Math.min(maxDx, dx));
 			desktopChat.style.width = `${startWidth - clampedDx}px`;
-			desktopChat.style.left = `${startLeft + clampedDx}px`;
+			const left = startLeft + clampedDx;
+			desktopChat.style.left = `${phone ? left + shift.left : left}px`;
 		}
 		if (dir.includes('n')) {
-			const maxDy = startHeight - MIN_H;
-			const minDy = -startTop;
+			const maxDy = startHeight - minH;
+			const minDy = phone ? box.top - startTop : -startTop;
 			const clampedDy = Math.max(minDy, Math.min(maxDy, dy));
 			desktopChat.style.height = `${startHeight - clampedDy}px`;
-			desktopChat.style.top = `${startTop + clampedDy}px`;
+			const top = startTop + clampedDy;
+			desktopChat.style.top = `${phone ? top + shift.top : top}px`;
 		}
 	}
 
@@ -6212,6 +6394,7 @@ window.addEventListener('orientationchange', fitDesktopChatToViewport);
 		dir = '';
 		activePointerId = null;
 		desktopChat.classList.remove('resizing');
+		fitDesktopChatToViewport();
 		saveDesktopChatSize();
 	}
 
@@ -6239,13 +6422,17 @@ document.addEventListener('keydown', (e) => {
 	e.preventDefault();
 	const rect = desktopChat.getBoundingClientRect();
 	const margin = 8;
+	const phone = isNarrowDesktopChat();
+	const box = phone ? desktopChatVisibleBox() : null;
+	const shift = phone ? desktopChatFixedShift() : null;
 	let left = rect.left, top = rect.top;
-	if (dir === 'w') left = margin;
-	if (dir === 'e') left = window.innerWidth - rect.width - margin;
-	if (dir === 'n') top = margin;
-	if (dir === 's') top = window.innerHeight - rect.height - margin;
-	desktopChat.style.left = `${left}px`;
-	desktopChat.style.top = `${top}px`;
+	if (dir === 'w') left = phone ? box.left : margin;
+	if (dir === 'e') left = phone ? box.right - rect.width : window.innerWidth - rect.width - margin;
+	if (dir === 'n') top = phone ? box.top : margin;
+	if (dir === 's') top = phone ? box.bottom - rect.height : window.innerHeight - rect.height - margin;
+	desktopChat.style.left = `${phone ? left + shift.left : left}px`;
+	desktopChat.style.top = `${phone ? top + shift.top : top}px`;
+	if (phone) fitDesktopChatToViewport();
 });
 
 // Tabs: Chat (Scene|Theme) / Environment / Scenes / Files / Code / Community (Scenes|Themes).

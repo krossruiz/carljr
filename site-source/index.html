@@ -278,8 +278,15 @@
 		   button (~390px wide). Stretch between safe-area insets instead of a
 		   fixed width, and keep resize handles inside so they cannot widen the
 		   layout viewport (iOS then paints slightly zoomed). 16px fields stop
-		   Safari from zooming on focus. Desktop / VR unchanged (this query only). */
+		   Safari from zooming on focus. Desktop / VR unchanged (this query only).
+		   top/left here are the first-paint fallback (below the status bar).
+		   main.js then clamps to the visual viewport, because Safari chrome is
+		   not part of 100vh / safe-area and a saved top must not win. */
 		@media (max-width: 720px) {
+			#desktop-chat {
+				min-width: 0;
+				min-height: 0;
+			}
 			#desktop-chat:not(.expanded) {
 				top: max(12px, env(safe-area-inset-top, 0px));
 				left: max(8px, env(safe-area-inset-left, 0px));
@@ -287,18 +294,11 @@
 				width: auto;
 				max-width: none;
 				min-width: 0;
+				min-height: 0;
 				height: min(520px, calc(100vh - 24px));
 				height: min(520px, calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)));
 				max-height: calc(100vh - 16px);
 				max-height: calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-			}
-			#desktop-chat.expanded {
-				top: max(8px, env(safe-area-inset-top, 0px)) !important;
-				left: max(8px, env(safe-area-inset-left, 0px)) !important;
-				right: auto !important;
-				width: calc(100vw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)) !important;
-				width: calc(100dvw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)) !important;
-				height: calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
 			}
 			#desktop-chat-header-buttons,
 			#desktop-chat-header-buttons button { flex-shrink: 0; }
@@ -420,6 +420,24 @@
 			height: calc(100vh - 24px) !important;
 			max-width: none;
 			max-height: none;
+		}
+
+		/* After the desktop expanded rule so these !important declarations win
+		   on phones. --dchat-vv-* are the visual viewport (URL bar included)
+		   plus safe-area, written by fitDesktopChatToViewport. Fallbacks keep
+		   the header below the status bar if that script has not run yet. */
+		@media (max-width: 720px) {
+			#desktop-chat.expanded {
+				top: var(--dchat-vv-top, max(8px, env(safe-area-inset-top, 0px))) !important;
+				left: var(--dchat-vv-left, max(8px, env(safe-area-inset-left, 0px))) !important;
+				right: auto !important;
+				width: var(--dchat-vv-width, calc(100dvw - 16px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))) !important;
+				height: var(--dchat-vv-height, calc(100dvh - 16px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px))) !important;
+				max-width: none !important;
+				max-height: none !important;
+				min-width: 0 !important;
+				min-height: 0 !important;
+			}
 		}
 
 		#desktop-model-row {
